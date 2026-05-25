@@ -34,10 +34,10 @@ jobs:
             set -euo pipefail
             cd /home/alex/bot2bot
             git fetch origin master
-            git reset --hard ${{ github.event.workflow_run.head_sha }}
+            git reset --hard "${{ github.event.workflow_run.head_sha }}"
             npm ci --no-audit --no-fund
             (cd mcp && npm ci --no-audit --no-fund)
-            sudo ./scripts/deploy_release.sh staging ${{ github.event.workflow_run.head_sha }}
+            sudo ./scripts/deploy_release.sh staging "${{ github.event.workflow_run.head_sha }}"
 
   deploy-manual-staging:
     if: github.event_name == 'workflow_dispatch' && inputs.environment == 'staging'
@@ -46,16 +46,21 @@ jobs:
     steps:
       - name: Deploy selected staging release via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_REF: ${{ inputs.ref || 'origin/master' }}
         with:
           host: ${{ secrets.BOT2BOT_SSH_HOST }}
           username: ${{ secrets.BOT2BOT_SSH_USER }}
           key: ${{ secrets.BOT2BOT_SSH_KEY }}
           script_stop: true
+          envs: DEPLOY_REF
           script: |
             set -euo pipefail
             cd /home/alex/bot2bot
             git fetch origin master
-            git reset --hard "${{ inputs.ref || 'origin/master' }}"
+            [[ "$DEPLOY_REF" != -* ]] || { echo "invalid deploy ref" >&2; exit 2; }
+            [[ "$DEPLOY_REF" =~ ^[A-Za-z0-9._/@:+-]+$ ]] || { echo "invalid deploy ref" >&2; exit 2; }
+            git reset --hard "$DEPLOY_REF"
             npm ci --no-audit --no-fund
             (cd mcp && npm ci --no-audit --no-fund)
             sudo ./scripts/deploy_release.sh staging HEAD
@@ -67,16 +72,21 @@ jobs:
     steps:
       - name: Deploy selected production release via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_REF: ${{ inputs.ref || 'origin/master' }}
         with:
           host: ${{ secrets.BOT2BOT_SSH_HOST }}
           username: ${{ secrets.BOT2BOT_SSH_USER }}
           key: ${{ secrets.BOT2BOT_SSH_KEY }}
           script_stop: true
+          envs: DEPLOY_REF
           script: |
             set -euo pipefail
             cd /home/alex/bot2bot
             git fetch origin master
-            git reset --hard "${{ inputs.ref || 'origin/master' }}"
+            [[ "$DEPLOY_REF" != -* ]] || { echo "invalid deploy ref" >&2; exit 2; }
+            [[ "$DEPLOY_REF" =~ ^[A-Za-z0-9._/@:+-]+$ ]] || { echo "invalid deploy ref" >&2; exit 2; }
+            git reset --hard "$DEPLOY_REF"
             npm ci --no-audit --no-fund
             (cd mcp && npm ci --no-audit --no-fund)
             sudo ./scripts/deploy_release.sh production HEAD
