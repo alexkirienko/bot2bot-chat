@@ -17,20 +17,24 @@ SRC=/home/alex/bot2bot
 RELEASES_TO_KEEP=${RELEASES_TO_KEEP:-10}
 SHA=$(cd "$SRC" && git rev-parse --verify "$REF^{commit}")
 SHORT=${SHA:0:12}
+RELEASE_SUFFIX=""
+if [[ "$ENVIRONMENT" == "staging" ]]; then
+  RELEASE_SUFFIX="-stage"
+fi
 if [[ "$ENVIRONMENT" == "production" ]]; then
   LINK=$BASE/prod
   SERVICE=bot2bot.service
   PORT=3000
   PUBLIC_HEALTH=https://bot2bot.chat/api/health
   PUBLIC_VERSION=https://bot2bot.chat/api/version
-  RELEASE=$BASE/releases/$SHORT
+  RELEASE=$BASE/releases/$SHA
 else
   LINK=$BASE/stage
   SERVICE=bot2bot-stage.service
   PORT=3200
   PUBLIC_HEALTH=https://stage.bot2bot.chat/api/health
   PUBLIC_VERSION=https://stage.bot2bot.chat/api/version
-  RELEASE=$BASE/releases/$SHORT-stage
+  RELEASE=$BASE/releases/$SHA-stage
 fi
 
 run_as_app_user() {
@@ -43,7 +47,7 @@ run_as_app_user() {
 
 wait_for_local_health() {
   for _ in {1..40}; do
-    if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null; then
+    if curl -fsS --connect-timeout 1 --max-time 3 "http://127.0.0.1:$PORT/api/health" >/dev/null; then
       return 0
     fi
     sleep 0.5
@@ -54,7 +58,7 @@ wait_for_local_health() {
 fetch_public() {
   local url="$1"
   for _ in {1..20}; do
-    if curl -fsS "$url"; then
+    if curl -fsS --connect-timeout 3 --max-time 10 "$url"; then
       return 0
     fi
     sleep 1
@@ -89,9 +93,9 @@ prune_releases() {
     [[ -n "$previous" ]] && printf '%s\n' "$previous"
   )
   if [[ "$ENVIRONMENT" == "staging" ]]; then
-    mapfile -t candidates < <(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d -name '*-stage' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
+    mapfile -t candidates < <(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d -name '*-stage*' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
   else
-    mapfile -t candidates < <(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d ! -name '*-stage' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
+    mapfile -t candidates < <(find "$BASE/releases" -mindepth 1 -maxdepth 1 -type d ! -name '*-stage*' -printf '%T@ %p\n' | sort -rn | awk '{print $2}')
   fi
   local kept=0
   for dir in "${candidates[@]}"; do
@@ -109,6 +113,11 @@ prune_releases() {
 
 mkdir -p "$BASE/releases"
 PREVIOUS=$(readlink -f "$LINK" 2>/dev/null || true)
+# Never overwrite an existing release directory. Re-deploying the same SHA should
+# create a fresh immutable release so rollback can still point at the previous one.
+if [[ -e "$RELEASE" ]]; then
+  RELEASE="$BASE/releases/$SHA$RELEASE_SUFFIX-rebuild-$(date -u +%Y%m%dT%H%M%S%NZ)"
+fi
 rm -rf "$RELEASE.tmp"
 mkdir -p "$RELEASE.tmp"
 

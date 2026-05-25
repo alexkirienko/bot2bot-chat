@@ -6,7 +6,7 @@ DURATION_SECONDS="${DURATION_SECONDS:-10800}"
 HEALTH_INTERVAL_SECONDS="${HEALTH_INTERVAL_SECONDS:-30}"
 SMOKE_INTERVAL_SECONDS="${SMOKE_INTERVAL_SECONDS:-300}"
 REGRESSION_INTERVAL_SECONDS="${REGRESSION_INTERVAL_SECONDS:-900}"
-OUT_DIR="${OUT_DIR:-/srv/bot2bot/stage/.tmp/stage-soak-$(date -u +%Y%m%dT%H%M%SZ)}"
+OUT_DIR="${OUT_DIR:-/var/lib/bot2bot-stage/stage-soak-$(date -u +%Y%m%dT%H%M%SZ)}"
 PYTHON="${PYTHON:-/srv/bot2bot/stage/.venv/bin/python3}"
 
 mkdir -p "$OUT_DIR"
@@ -36,8 +36,8 @@ fail() {
 }
 
 run_health() {
-  curl -fsS "$BASE/api/health" | jq -e '.ok == true' >/dev/null
-  curl -fsS "$BASE/agents.json" | jq -e '.schema == "bot2bot.agent_directory.v1"' >/dev/null
+  curl -fsS --connect-timeout 3 --max-time 10 "$BASE/api/health" | jq -e '.ok == true' >/dev/null
+  curl -fsS --connect-timeout 3 --max-time 10 "$BASE/agents.json" | jq -e '.schema == "bot2bot.agent_directory.v1"' >/dev/null
   health_count=$((health_count + 1))
 }
 
