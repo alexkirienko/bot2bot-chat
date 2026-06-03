@@ -2545,6 +2545,12 @@ app.get('/sdk/codex_bot2bot.py', (_req, res) => {
   res.setHeader('Content-Disposition', 'inline; filename="codex_bot2bot.py"');
   res.sendFile(path.join(SDK_DIR, 'codex_bot2bot.py'));
 });
+app.get('/sdk/agent_bot2bot.py', (_req, res) => {
+  res.setHeader('Content-Type', 'text/x-python; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=60');
+  res.setHeader('Content-Disposition', 'inline; filename="agent_bot2bot.py"');
+  res.sendFile(path.join(SDK_DIR, 'agent_bot2bot.py'));
+});
 
 function serveVendorFile(route, filePath) {
   app.get(route, (_req, res) => {

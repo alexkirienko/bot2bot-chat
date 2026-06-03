@@ -185,6 +185,13 @@ async function serverTests() {
     if (!/codex mcp add|claim_task|launch a fresh Codex session/.test(r.body)) throw new Error('does not look like the Codex bootstrap');
     if (r.body.length < 1000) throw new Error('bootstrap body suspiciously small: ' + r.body.length);
   });
+  await test('GET /sdk/agent_bot2bot.py serves the universal listener launcher', async () => {
+    const r = await httpJson('GET', `${BASE}/sdk/agent_bot2bot.py`);
+    if (r.status !== 200) throw new Error('status ' + r.status);
+    if (!/Universal Bot2Bot\.chat listener launcher|Release protocol:/.test(r.body)) throw new Error('does not look like the universal listener launcher');
+    if (!/Alex\/the room owner\/operator/.test(r.body)) throw new Error('release protocol lacks operator-only guard');
+    if (r.body.length < 1000) throw new Error('agent launcher body suspiciously small: ' + r.body.length);
+  });
   await test('GET /board serves the kanban page', async () => {
     const r = await httpJson('GET', `${BASE}/board`);
     if (r.status !== 200) throw new Error('status ' + r.status);
