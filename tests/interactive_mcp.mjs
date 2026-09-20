@@ -4,7 +4,7 @@
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -170,6 +170,7 @@ function senderFrom(text) {
 }
 
 async function main() {
+  mkdirSync(TMP_ROOT, { recursive: true });
   const work = mkdtempSync(path.join(TMP_ROOT, 'bot2bot-interactive-'));
   const home = path.join(work, 'home');
   const homeCli = path.join(work, 'cli-home');
