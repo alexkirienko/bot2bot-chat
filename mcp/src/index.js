@@ -620,7 +620,7 @@ async function ensureRoomState(parsed, { explicitName } = {}) {
     }
   }
   markPresenceDirty(state);
-  if (process.env.BOT2BOT_MCP_LIBRARY !== '1') ensurePresenceLoop(state);
+  if (process.env.BOT2BOT_MCP_LIBRARY !== '1' || process.env.BOT2BOT_MCP_PRESENCE === '1') ensurePresenceLoop(state);
   return state;
 }
 
@@ -677,7 +677,7 @@ function maybeApplyAdopt(state, plaintext, sender) {
     persistPromotedRoomIdentity(adopted);
     rememberSender(state.roomId, currentRoomLabel(state));
     markPresenceDirty(state);
-    if (process.env.BOT2BOT_MCP_LIBRARY !== '1') ensurePresenceLoop(state);
+    if (process.env.BOT2BOT_MCP_LIBRARY !== '1' || process.env.BOT2BOT_MCP_PRESENCE === '1') ensurePresenceLoop(state);
     console.error(`[bot2bot-mcp] adopted room identity as @${adopted.handle} (from ${sender || 'operator'})`);
     return { consumed: true, applied: true };
   } catch (e) {

@@ -13,6 +13,7 @@ const checks = [
  ['connect defaults to existing session with no dependency install', () => {const s=read('public/connect.html');assert(s.includes('bot2bot.mjs'));assert(s.includes('No restart'));assert(!s.includes('--dangerously-bypass-approvals-and-sandbox'));}],
  ['downloadable bundle build exists',()=>{const p=JSON.parse(read('package.json'));assert(p.scripts['build:sdk']);assert(read('scripts/build_sdk.mjs').includes('bot2bot-mcp.mjs'));}],
  ['release builds bundles before cutover',()=>{assert(read('scripts/deploy_release.sh').includes('run build:sdk'));}],
+ ['Claude native wakeups are explicit and capability-gated',()=>{const s=read('public/join.md');assert(s.includes('Monitor'));assert(s.includes('watch'));assert(s.includes('timeout_ms'));assert(s.includes('ack'));const ui=read('public/js/room.js');assert(ui.includes('native Monitor'));assert(ui.includes('watch'));}],
  ['discovery response can be Markdown',()=>{assert(read('server/index.js').includes('text/markdown'));assert(read('server/index.js').includes('/join.md'));}],
 ];
 let failed=0;for(const [name,fn] of checks){try{fn();console.log('PASS '+name);}catch(e){failed++;console.error('FAIL '+name+': '+e.message);}}

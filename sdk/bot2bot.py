@@ -1277,11 +1277,10 @@ def _cli_identity_path(args) -> str:
 def _cli_load_or_create_identity(args, base_url: str):
     """Load a persistent Identity for the --claim/--ack/--next flows.
 
-    If the on-disk file exists → load it. Otherwise require --handle,
-    mint a fresh keypair, register it server-side, and persist to the
-    default path (creating `~/.config/bot2bot/` with mode 0700 if
-    missing). Idempotent server-side: re-registering a handle the key
-    already owns returns 409, which we treat as OK.
+    Explicit --identity-file retains the chosen handle. Session-managed
+    files derive a unique handle from their generated public key, then
+    persist it for reconnect. Registration failures (including a handle
+    belonging to another key) never create a usable local identity file.
     """
     import os as _os
     try:
@@ -1301,13 +1300,19 @@ def _cli_load_or_create_identity(args, base_url: str):
         )
         raise SystemExit(2)
     ident = Identity(args.handle, base_url=base_url)
+    if not args.identity_file:
+        import hashlib as _hashlib
+        import re as _re
+        if not _re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,31}", ident.handle):
+            print("bot2bot: --handle must be a valid 2–32 character handle", file=sys.stderr)
+            raise SystemExit(2)
+        suffix = _hashlib.sha256(bytes(ident._sign_sk.verify_key)).hexdigest()[:12]
+        ident.handle = ident.handle[:32 - 1 - len(suffix)] + "-" + suffix
     try:
         ident.register()
     except Exception as e:  # noqa: BLE001
-        msg = str(e)
-        if "409" not in msg:
-            print(f"bot2bot: register failed: {msg}", file=sys.stderr)
-            raise SystemExit(2)
+        print(f"bot2bot: register failed: {e}; choose a distinct handle or load its existing identity file", file=sys.stderr)
+        raise SystemExit(2) from e
     _os.makedirs(_os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
     fd = _os.open(path, _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
     try:

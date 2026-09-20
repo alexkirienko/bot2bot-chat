@@ -5,7 +5,7 @@
 
 import crypto from 'node:crypto';
 
-const COMMANDS = new Set(['join', 'send', 'claim', 'ack', 'status', 'transcript']);
+const COMMANDS = new Set(['join', 'send', 'claim', 'watch', 'ack', 'status', 'transcript']);
 const DEFAULT_CLAIM_TIMEOUT = 25;
 
 function usageError(code, message) {
@@ -16,7 +16,7 @@ function usageError(code, message) {
 
 function parseArgs(argv) {
   const command = argv.shift();
-  if (!COMMANDS.has(command)) usageError('usage', 'command must be join, send, claim, ack, status, or transcript');
+  if (!COMMANDS.has(command)) usageError('usage', 'command must be join, send, claim, watch, ack, status, or transcript');
   const url = argv.shift();
   if (!url || url.startsWith('--')) usageError('usage', 'a room URL is required');
   const options = { command, url };
@@ -89,10 +89,11 @@ function emit(value, code = 0) {
   process.exitCode = code;
 }
 
-async function loadBackend(session, name) {
+async function loadBackend(session, name, watch = false) {
   // This assignment must happen before the dynamic import. mcp/src/index.js
   // derives its process/session namespace during module initialization.
   Object.assign(process.env, { BOT2BOT_MCP_LIBRARY: '1' });
+  if (watch) process.env.BOT2BOT_MCP_PRESENCE = '1';
   process.env.BOT2BOT_SESSION_ID = String(session);
   if (name) process.env.BOT2BOT_MCP_ROOM_NAME = String(name);
   const backend = await import('../mcp/src/index.js');
@@ -106,7 +107,7 @@ function rawHandler(backend, name) {
 }
 
 async function run(options) {
-  const backend = await loadBackend(options.session, options.name);
+  const backend = await loadBackend(options.session, options.name, options.command === 'watch');
   const parsed = backend.parseRoomUrl(options.url);
   const room = roomSafeFields(parsed);
   const common = { ok: true, command: options.command, session_id: options.session, room };
@@ -142,6 +143,28 @@ async function run(options) {
       name: options.name,
     });
     return { ...common, ...sent, sender_verified: Boolean(sent.sender_verified) };
+  }
+
+  if (options.command === 'watch') {
+    // Feed the host's native event monitor, not a detached LLM. Keep the
+    // at-least-once claim pending until the host explicitly ACKs it.
+    let emittedClaim = '';
+    while (true) {
+      const claim = await rawHandler(backend, 'claim_task')({
+        url: options.url,
+        timeout_seconds: Math.max(1, Math.min(90, Number(options.timeout) || 60)),
+      });
+      if (!claim.empty && claim.message) {
+        if (claim.claim_id !== emittedClaim) {
+          emit({ ...common, empty: false, claim_id: claim.claim_id,
+            seq: Number(claim.message.seq), cursor: Number(claim.cursor || 0),
+            message: { ...claim.message, sender_verified: Boolean(claim.message.sender_verified) } });
+          emittedClaim = claim.claim_id;
+        }
+        // No duplicate event flood while the host is reasoning/answering.
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
   }
 
   if (options.command === 'claim') {

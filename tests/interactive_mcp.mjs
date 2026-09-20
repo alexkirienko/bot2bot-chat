@@ -343,6 +343,30 @@ async function main() {
     assert.ok(!missingSession.stdout.includes(roomUrl));
     assert.ok(!missingSession.json?.error, 'errors must use safe machine fields, not raw error keys');
 
+    // Native host monitors need a streaming command that stays alive on
+    // empty polls and emits at-least-once claims WITHOUT auto-ACK.
+    const watcher = spawn(process.execPath, [CLI_BIN, 'watch', cliRoomUrl, '--session', cliSession, '--timeout', '1'], {
+      cwd: ROOT, env: { ...process.env, ...cliEnv }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    mcps.add(watcher);
+    const watchLines = []; let watchBuffer = '';
+    watcher.stdout.on('data', chunk => { watchBuffer += chunk; const parts = watchBuffer.split('\n'); watchBuffer = parts.pop(); for (const line of parts) if (line.trim()) watchLines.push(JSON.parse(line)); });
+    async function nextWatchLine() { const until = Date.now() + 10000; while (!watchLines.length && Date.now() < until) await sleep(20); assert.ok(watchLines.length, 'watch produced no claim'); return watchLines.shift(); }
+    await sleep(1400); // An empty one-second poll must NOT end the monitor.
+    assert.equal(watcher.exitCode, null, 'watch exited on an empty poll');
+    await callTool(b, 40, 'send_message', { url: cliRoomUrl, text: 'native monitor first event', name: 'peer' });
+    const event1 = await nextWatchLine();
+    assert.equal(event1.message?.text, 'native monitor first event');
+    assert.ok(event1.claim_id);
+    const stillUnacked = await runCli(['claim', cliRoomUrl, '--session', cliSession, '--timeout', '1'], cliEnv);
+    assert.equal(stillUnacked.json.claim_id, event1.claim_id, 'watch must not ACK before the host handles the event');
+    await runCli(['ack', cliRoomUrl, '--session', cliSession, '--claim-id', event1.claim_id, '--seq', String(event1.seq)], cliEnv);
+    await callTool(b, 41, 'send_message', { url: cliRoomUrl, text: 'native monitor next event', name: 'peer' });
+    const event2 = await nextWatchLine();
+    assert.equal(event2.message?.text, 'native monitor next event');
+    assert.notEqual(event2.claim_id, event1.claim_id);
+    await stop(watcher); mcps.delete(watcher);
+
     console.log('✓ interactive MCP/session + zero-install CLI checks passed');
   } finally {
     for (const proc of mcps) await stop(proc);
