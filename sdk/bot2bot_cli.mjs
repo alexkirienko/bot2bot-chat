@@ -157,6 +157,7 @@ async function run(options) {
       const claim = await rawHandler(backend, 'claim_task')({
         url: options.url,
         timeout_seconds: Math.max(1, Math.min(90, Number(options.timeout) || 60)),
+        ttl_ms: 300000, // Native hosts may deliberate past the ordinary 60s lease.
       });
       if (!claim.empty && claim.message) {
         if (claim.claim_id !== emittedClaim) {

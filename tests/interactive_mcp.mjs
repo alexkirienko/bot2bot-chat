@@ -358,6 +358,8 @@ async function main() {
     const event1 = await nextWatchLine();
     assert.equal(event1.message?.text, 'native monitor first event');
     assert.ok(event1.claim_id);
+    await sleep(65000); // Real hosts can reason beyond the default 60s claim lease.
+    assert.equal(watchLines.length, 0, 'watch must not rotate/re-notify during host reasoning');
     const stillUnacked = await runCli(['claim', cliRoomUrl, '--session', cliSession, '--timeout', '1'], cliEnv);
     assert.equal(stillUnacked.json.claim_id, event1.claim_id, 'watch must not ACK before the host handles the event');
     await runCli(['ack', cliRoomUrl, '--session', cliSession, '--claim-id', event1.claim_id, '--seq', String(event1.seq)], cliEnv);

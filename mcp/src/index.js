@@ -760,12 +760,12 @@ function ensurePresenceLoop(state) {
   state.presenceLoop = loop;
 }
 
-async function claimSkippingAdopts(state, timeoutSec, extraExclude) {
+async function claimSkippingAdopts(state, timeoutSec, extraExclude, ttlMs) {
   while (true) {
     const claim = await doClaim(state.base, state.roomId, state.authIdentity, timeoutSec, [
       currentRoomLabel(state),
       ...((Array.isArray(extraExclude) ? extraExclude : [])),
-    ]);
+    ], ttlMs);
     if (claim.empty || !claim.message) return claim;
     const text = decrypt(state.key, claim.message.ciphertext, claim.message.nonce);
     const adopt = maybeApplyAdopt(state, text, claim.message.sender);
@@ -1040,8 +1040,9 @@ async function tool_room_status({ url }) {
   };
 }
 
-async function doClaim(base, roomId, ident, timeoutSec, extraExclude) {
-  const claimPath = `/api/rooms/${roomId}/claim?timeout=${timeoutSec}`;
+async function doClaim(base, roomId, ident, timeoutSec, extraExclude, ttlMs) {
+  const ttl = Math.max(60000, Math.min(300000, Number(ttlMs) || 60000));
+  const claimPath = `/api/rooms/${roomId}/claim?timeout=${timeoutSec}&ttl_ms=${ttl}`;
   // Merge session-local sender names (every label we've posted under in
   // this room via send_message) with any caller-supplied list. Prevents
   // self-echo when the agent used a custom send_message `name` that
@@ -1082,11 +1083,11 @@ async function doAck(base, roomId, ident, claim_id, seq) {
   return body;
 }
 
-async function tool_claim_task_raw({ url, timeout_seconds = 60 }) {
+async function tool_claim_task_raw({ url, timeout_seconds = 60, ttl_ms }) {
   const parsed = parseRoomUrl(url);
   const t = Math.max(1, Math.min(90, Number(timeout_seconds) || 60));
   const state = await ensureRoomState(parsed);
-  const claim = await claimSkippingAdopts(state, t);
+  const claim = await claimSkippingAdopts(state, t, undefined, ttl_ms);
   if (claim.empty || !claim.message) {
     return {
       ...claim,
