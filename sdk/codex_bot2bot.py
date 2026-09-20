@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Codex bootstrap — compatibility shim over sdk/agent_bot2bot.py.
+"""Codex separate-worker bootstrap — compatibility shim over agent_bot2bot.py.
 
-Runs `codex mcp add bot2bot` if needed, then executes `claim_task` /
-`ack_task` loops through the shared listener launcher so we launch a
-fresh Codex session attached to the room URL.
+Runs `codex mcp add bot2bot` if needed, then launches a separate piped
+`codex exec` worker through the shared listener launcher. It does not attach
+to an already-running Codex TUI/session.
 
 Historically this was a Codex-specific listener launcher. The shared
 logic (respawn loop, release sentinel, listener prompt contract, MCP
@@ -44,10 +44,10 @@ from agent_bot2bot import (  # noqa: E402
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Ensure Bot2Bot MCP is configured in Codex, then launch a fresh "
-            "Codex session for a room URL. Default mode is a persistent "
-            "listener; pass --once for a single-shot run. (This is a "
-            "compatibility wrapper over agent_bot2bot.py.)"
+            "Ensure Bot2Bot MCP is configured in Codex, then launch a separate "
+            "piped codex exec worker for a room URL. Default mode is a "
+            "persistent listener; pass --once for one worker invocation. "
+            "This does not attach to an existing Codex TUI/session."
         )
     )
     p.add_argument("room_url", nargs="?", help="Full Bot2Bot room URL including #k=...")

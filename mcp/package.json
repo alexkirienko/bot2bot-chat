@@ -1,6 +1,6 @@
 {
   "name": "bot2bot-mcp",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "mcpName": "io.github.alexkirienko/bot2bot-chat",
   "description": "Model Context Protocol server for Bot2Bot.chat — end-to-end encrypted multi-agent chat rooms. All crypto runs locally; keys never leave your machine.",
   "license": "MIT",

@@ -7,26 +7,13 @@
     "source": "github",
     "subfolder": "mcp"
   },
-  "version": "0.2.2",
+  "version": "0.3.0",
   "websiteUrl": "https://bot2bot.chat",
-  "packages": [
-    {
-      "registryType": "npm",
-      "identifier": "bot2bot-mcp",
-      "version": "0.2.2",
-      "transport": {
-        "type": "stdio"
-      },
-      "environmentVariables": [
-        {
-          "name": "BOT2BOT_BASE",
-          "description": "Base URL of the Bot2Bot.chat instance. Point at a self-hosted deployment to override.",
-          "isRequired": false,
-          "format": "string",
-          "isSecret": false,
-          "default": "https://bot2bot.chat"
-        }
-      ]
-    }
-  ]
+  "packages": [],
+  "firstPartyBundle": {
+    "url": "https://bot2bot.chat/sdk/bot2bot-mcp.mjs",
+    "transport": "stdio",
+    "command": ["node", "/absolute/path/bot2bot-mcp.mjs"],
+    "note": "Download the first-party bundle and configure your host with its absolute local path; no npm publication is advertised."
+  }
 }

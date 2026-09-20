@@ -119,6 +119,9 @@ class Message:
     sender: str
     text: Optional[str]   # None if decryption failed
     ts: float             # unix seconds
+    sender_verified: bool = False
+    source: object | None = None
+    source_metadata: object | None = None
 
 
 class Room:
@@ -515,7 +518,21 @@ class Room:
         if data.get("empty") or "message" not in data:
             return None
         m = self._decode(data["message"])
-        return {"claim_id": data["claim_id"], "message": m, "cursor": int(data.get("cursor", 0))}
+        result = {
+            "claim_id": data["claim_id"],
+            "message": m,
+            "cursor": int(data.get("cursor", 0)),
+        }
+        # Keep any relay-provided source envelope available to CLI callers.
+        # These values are optional and must never be synthesized from the
+        # caller's authentication method.
+        if "source" in data:
+            result["source"] = data["source"]
+        if "source_metadata" in data:
+            result["source_metadata"] = data["source_metadata"]
+        elif "source_meta" in data:
+            result["source_metadata"] = data["source_meta"]
+        return result
 
     def ack_claim(self, identity, claim_id: str, seq: int) -> dict:
         """Advance the server cursor past a claimed message."""
@@ -679,12 +696,20 @@ class Room:
             plaintext = self._box.decrypt(ct, nonce).decode("utf-8")
         except Exception:  # noqa: BLE001
             plaintext = None
+        source_metadata = obj.get("source_metadata")
+        if source_metadata is None and "source_meta" in obj:
+            source_metadata = obj.get("source_meta")
         return Message(
             id=obj.get("id", ""),
             seq=int(obj.get("seq", 0) or 0),
             sender=obj.get("sender", "agent"),
             text=plaintext,
             ts=(obj.get("ts", 0) or 0) / 1000.0,
+            # Preserve the relay's assertion exactly as data. In particular,
+            # do not infer sender authentication from the signed claim caller.
+            sender_verified=(obj.get("sender_verified") is True),
+            source=obj.get("source"),
+            source_metadata=source_metadata,
         )
 
 
@@ -750,7 +775,13 @@ def _cli() -> int:
     ap.add_argument(
         "--identity-file",
         default=None,
-        help="[--claim/--ack/--next] path to an Identity blob (default: ~/.config/bot2bot/cli_identity.key).",
+        help="[--claim/--ack/--next] explicit path to an Identity blob; stable legacy override.",
+    )
+    ap.add_argument(
+        "--session",
+        default=None,
+        help="[--claim/--ack/--next] session id used to isolate the default Identity path; "
+             "falls back to BOT2BOT_SESSION_ID. Required unless --identity-file is given.",
     )
     ap.add_argument(
         "--claim-timeout",
@@ -1213,16 +1244,34 @@ def dm(
 
 
 def _cli_identity_path(args) -> str:
-    """Default path for the CLI's persistent Identity, scoped to $HOME.
+    """Return the CLI Identity path without sharing a global default.
 
     Separate from the MCP server's `mcp_identity.key` so the two don't
     fight over the same @handle — the CLI is its own thing, launched by
-    Claude Code / Cursor / Codex via a shell tool.
+    Claude Code / Cursor / Codex via a shell tool. Explicit
+    ``--identity-file`` remains a stable backwards-compatible override;
+    otherwise each session gets its own directory, selected by ``--session``
+    or ``BOT2BOT_SESSION_ID``.
     """
+    import hashlib as _hashlib
     import os as _os
     if args.identity_file:
         return _os.path.expanduser(args.identity_file)
-    return _os.path.expanduser("~/.config/bot2bot/cli_identity.key")
+    session = str(getattr(args, "session", None) or _os.environ.get("BOT2BOT_SESSION_ID") or "").strip()
+    if not session:
+        raise ValueError(
+            "no session identity is configured; pass --session NAME or set "
+            "BOT2BOT_SESSION_ID, or provide --identity-file"
+        )
+    # Keep ordinary operator-friendly names readable while making hostile
+    # path separators harmless. The digest keeps unusual ids stable too.
+    if not _os.path.basename(session) == session or session in {".", ".."}:
+        component = "session-" + _hashlib.sha256(session.encode("utf-8")).hexdigest()[:20]
+    else:
+        component = session
+    return _os.path.expanduser(
+        _os.path.join("~/.config/bot2bot/sessions", component, "cli_identity.key")
+    )
 
 
 def _cli_load_or_create_identity(args, base_url: str):
@@ -1235,14 +1284,18 @@ def _cli_load_or_create_identity(args, base_url: str):
     already owns returns 409, which we treat as OK.
     """
     import os as _os
-    path = _cli_identity_path(args)
+    try:
+        path = _cli_identity_path(args)
+    except ValueError as e:
+        print(f"bot2bot: {e}", file=sys.stderr)
+        raise SystemExit(2) from e
     if _os.path.exists(path):
         with open(path, "rb") as f:
             return Identity.from_bytes(f.read(), base_url=base_url)
     if not args.handle:
         print(
             "bot2bot: no identity file at " + path + " and --handle not set.\n"
-            "        Run once with:  bot2bot.py <URL> --next --handle your-name\n"
+            "        Run once with:  bot2bot.py <URL> --next --session my-session --handle your-name\n"
             "        (or point --identity-file at an existing Identity blob)",
             file=sys.stderr,
         )
@@ -1262,6 +1315,28 @@ def _cli_load_or_create_identity(args, base_url: str):
     finally:
         _os.close(fd)
     return ident
+
+
+def _claim_message_json(claim: dict) -> dict:
+    """Serialize one claim without manufacturing relay/auth metadata."""
+    message = claim["message"]
+    source = claim["source"] if "source" in claim else getattr(message, "source", None)
+    source_metadata = (
+        claim["source_metadata"]
+        if "source_metadata" in claim
+        else getattr(message, "source_metadata", None)
+    )
+    return {
+        "claim_id": claim["claim_id"],
+        "seq": message.seq,
+        "sender": message.sender,
+        "ts": message.ts,
+        "text": message.text,
+        "sender_verified": bool(getattr(message, "sender_verified", False)),
+        "source": source,
+        "source_metadata": source_metadata,
+        "cursor": claim.get("cursor"),
+    }
 
 
 def _cli_claim_ack(args) -> int:
@@ -1296,14 +1371,7 @@ def _cli_claim_ack(args) -> int:
                 print('{"empty": true}')
                 return 1
             m = c["message"]
-            out = {
-                "claim_id": c["claim_id"],
-                "seq": m.seq,
-                "sender": m.sender,
-                "ts": m.ts,
-                "text": m.text,
-                "cursor": c.get("cursor"),
-            }
+            out = _claim_message_json(c)
             print(json.dumps(out, ensure_ascii=False))
             return 0
         # --next = claim → print → ack, one roundtrip
@@ -1312,14 +1380,7 @@ def _cli_claim_ack(args) -> int:
             print('{"empty": true}')
             return 1
         m = c["message"]
-        out = {
-            "claim_id": c["claim_id"],
-            "seq": m.seq,
-            "sender": m.sender,
-            "ts": m.ts,
-            "text": m.text,
-            "cursor": c.get("cursor"),
-        }
+        out = _claim_message_json(c)
         try:
             room.ack_claim(identity, c["claim_id"], m.seq)
         except Exception as e:  # noqa: BLE001

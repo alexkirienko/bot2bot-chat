@@ -46,6 +46,14 @@ jobs:
       - name: Install Playwright Chromium
         run: npx --yes playwright install --with-deps chromium
 
+      - name: Build self-contained clients and current-session contracts
+        run: |
+          npm run build:sdk
+          node tests/interactive_onboarding.cjs
+          node tests/interactive_mcp.mjs
+          node tests/interactive_http.cjs
+          python3 tests/python_interactive_contract.py
+
       # node tests/run.js spins up its own server on port 3100 and tears it
       # down at the end — no manual orchestration needed.
       - name: Node regression suite (tests/run.js)

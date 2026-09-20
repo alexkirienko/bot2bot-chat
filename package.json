@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "test": "node tests/run.js"
+    "test": "node tests/run.js",
+    "build:sdk": "node scripts/build_sdk.mjs",
+    "test:interactive-onboarding": "node tests/interactive_onboarding.cjs"
   },
   "dependencies": {
     "express": "^4.21.1",
@@ -18,6 +20,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "playwright": "^1.48.0"
   }
 }

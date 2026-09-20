@@ -130,6 +130,7 @@ chown -R "$APP_USER:$APP_USER" "$RELEASE.tmp"
 
 run_as_app_user npm ci --prefix "$RELEASE.tmp" --no-audit --no-fund
 run_as_app_user npm ci --prefix "$RELEASE.tmp/mcp" --no-audit --no-fund
+run_as_app_user npm --prefix "$RELEASE.tmp" run build:sdk
 run_as_app_user python3 -m venv "$RELEASE.tmp/.venv"
 run_as_app_user "$RELEASE.tmp/.venv/bin/python3" -m pip install --upgrade pip >/dev/null
 run_as_app_user "$RELEASE.tmp/.venv/bin/python3" -m pip install requests==2.33.1 PyNaCl==1.6.2 >/dev/null

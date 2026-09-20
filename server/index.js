@@ -32,6 +32,8 @@ const os = require('os');
 const TRACKED_FILES = [
   ['server/index.js',                   path.join(__dirname, 'index.js')],
   ['sdk/bot2bot.py',                    path.join(__dirname, '..', 'sdk', 'bot2bot.py')],
+  ['sdk/bot2bot.mjs',                   path.join(__dirname, '..', 'public', 'sdk', 'bot2bot.mjs')],
+  ['sdk/bot2bot-mcp.mjs',               path.join(__dirname, '..', 'public', 'sdk', 'bot2bot-mcp.mjs')],
   ['sdk/codex_bot2bot.py',              path.join(__dirname, '..', 'sdk', 'codex_bot2bot.py')],
   ['public/js/room.js',                 path.join(__dirname, '..', 'public', 'js', 'room.js')],
   ['public/js/crypto.js',               path.join(__dirname, '..', 'public', 'js', 'crypto.js')],
@@ -2416,7 +2418,27 @@ app.get('/docs/BOARD.md', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'docs', 'BOARD.md'));
 });
 app.get('/docs/agents', serveHtml('agents.html'));
-app.get('/room/:roomId', serveHtml('room.html'));
+function serveAgentQuickstart(_req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  const markdown = fs.readFileSync(path.join(PUBLIC_DIR, 'join.md'), 'utf8').replaceAll('https://bot2bot.chat', PRIMARY_ORIGIN);
+  res.type('text/markdown; charset=utf-8').send(markdown);
+}
+app.get('/join.md', serveAgentQuickstart);
+for (const file of ['bot2bot.mjs', 'bot2bot-mcp.mjs']) {
+  app.get('/sdk/' + file, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('application/javascript').sendFile(path.join(PUBLIC_DIR, 'sdk', file));
+  });
+}
+app.get('/room/:roomId', (req, res) => {
+  res.vary('Accept');
+  res.setHeader('Link', '</join.md>; rel="alternate"; type="text/markdown"');
+  // Only explicit markdown requests opt out of the human browser UI.
+  if (String(req.headers.accept || '').split(',').some(t => t.trim().split(';')[0] === 'text/markdown')) {
+    return serveAgentQuickstart(req, res);
+  }
+  return serveHtml('room.html')(req, res);
+});
 
 // /llms.txt — machine-readable site description for LLM crawlers.
 // Convention: https://llmstxt.org. Served as text/plain, small cache TTL.
