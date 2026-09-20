@@ -316,19 +316,24 @@ section { padding: 80px 0; position: relative; }
 }
 
 .room-top {
-  height: 56px; min-height: 56px;
+  min-height: 56px; flex: 0 0 auto;
   background: var(--d-bg-2);
   border-bottom: 1px solid var(--d-border);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 18px;
+  flex-wrap: wrap; gap: 8px 16px;
+  padding: 8px 18px;
   position: relative; z-index: 5;
 }
-.room-top__left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.room-top__left { display: flex; align-items: center; gap: 14px; min-width: 0; max-width: 100%; }
+.room-top__left > .wordmark { flex-shrink: 0; }
 .room-top__title { display: flex; flex-direction: column; min-width: 0; }
-.room-top__title .meeting { font-size: 14px; font-weight: 600; color: var(--d-text); line-height: 1.2; letter-spacing: -0.005em; }
-.room-top__title .meta { font-size: 12px; color: var(--d-text-3); display: flex; gap: 10px; align-items: center; }
+.room-top__title .meeting { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; font-weight: 600; color: var(--d-text); line-height: 1.2; letter-spacing: -0.005em; }
+.room-top__title .meta { white-space: nowrap; font-size: 12px; color: var(--d-text-3); display: flex; gap: 10px; align-items: center; }
 .room-top__title .meta .sep { width: 3px; height: 3px; border-radius: 999px; background: var(--d-border-2); }
-.room-top__right { display: flex; align-items: center; gap: 8px; }
+.room-top__right { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; max-width: 100%; margin-left: auto; }
+/* Reflow whole controls instead of squeezing their labels or the room title. */
+.room-top__right > * { flex-shrink: 0; }
+.room-top .status-pill, .room-top .ghost-btn, .room-top .topbar-leave { white-space: nowrap; }
 
 .status-pill {
   display: inline-flex; align-items: center; gap: 8px;
@@ -387,9 +392,9 @@ section { padding: 80px 0; position: relative; }
 /* Phone — hide the meeting info and the "encrypted" status label text,
    keep the shield icon + dot so users still see the security state. */
 @media (max-width: 560px) {
-  .room-top { padding: 0 10px; height: 52px; }
+  .room-top { padding: 8px 10px; min-height: 52px; }
   .room-top__left { gap: 10px; }
-  .room-top__right { gap: 6px; }
+  .room-top__right { gap: 6px; flex: 1 1 0; min-width: 0; }
   .wordmark__name { font-size: 0; }              /* hide text */
   .wordmark__name .wordmark__logo { font-size: 19px; } /* keep logo size */
   .room-top__title { display: none; }             /* hide "Meeting · XXX" */
@@ -519,6 +524,14 @@ section { padding: 80px 0; position: relative; }
 }
 .composer-main textarea::placeholder { color: var(--d-text-3); }
 .composer-main textarea:focus { border-color: var(--primary); }
+
+/* Short/zoomed windows still need room for the input below a wrapped header. */
+@media (max-height: 480px) {
+  .composer-main { padding: 8px 12px; }
+  .composer-main__inner { gap: 4px; }
+  .composer-main .chat__hint { display: none; }
+  .chat-list { padding: 8px 12px; }
+}
 
 /* Stage empty state = prominent invite card.
    Centered when there's extra vertical space, but allows the card to grow

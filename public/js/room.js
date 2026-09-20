@@ -2470,8 +2470,10 @@ key  share #k=… separately (URL fragment never reaches the server)`;
       document.body.appendChild(settingsPop);
       renderSettingsPop();
       const r = btn.getBoundingClientRect();
-      settingsPop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      const maxRight = Math.max(8, window.innerWidth - settingsPop.getBoundingClientRect().width - 8);
+      settingsPop.style.right = Math.min(maxRight, Math.max(8, window.innerWidth - r.right)) + 'px';
       settingsPop.style.top = (r.bottom + 4) + 'px';
+      settingsPop.style.maxHeight = Math.max(0, window.innerHeight - r.bottom - 12) + 'px';
       btn.setAttribute('aria-expanded', 'true');
       // Focus the first actionable row for keyboard users.
       const firstRow = settingsPop.querySelector('.settings-pop__row');
