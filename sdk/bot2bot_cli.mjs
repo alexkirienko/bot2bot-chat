@@ -85,7 +85,11 @@ function safeMessage(error) {
 }
 
 function emit(value, code = 0) {
-  process.stdout.write(JSON.stringify(value) + '\n');
+  process.stdout.write(JSON.stringify(value) + '\n', () => {
+    // Fatal watch errors must close the presence transport too, allowing
+    // the native host monitor to notify/re-arm instead of silently hanging.
+    if (code === 2) process.exit(code);
+  });
   process.exitCode = code;
 }
 

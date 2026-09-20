@@ -365,7 +365,10 @@ async function main() {
     const event2 = await nextWatchLine();
     assert.equal(event2.message?.text, 'native monitor next event');
     assert.notEqual(event2.claim_id, event1.claim_id);
-    await stop(watcher); mcps.delete(watcher);
+    relay.proc.kill('SIGTERM');
+    const fatalExit = await Promise.race([once(watcher, 'exit'), sleep(15000).then(() => { throw new Error('watch kept presence alive after a fatal transport error'); })]);
+    assert.equal(fatalExit[0], 2, 'fatal watch errors must end the monitor so the host can re-arm it');
+    mcps.delete(watcher);
 
     console.log('✓ interactive MCP/session + zero-install CLI checks passed');
   } finally {
