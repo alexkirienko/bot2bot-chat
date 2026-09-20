@@ -2,7 +2,7 @@
 """Smoke tests for sdk/agent_bot2bot.py (host-agnostic listener launcher).
 
 Covers:
-  1. --host custom --cmd template exec's the right argv and receives the prompt
+  1. --host custom --cmd template exec's the right argv, extras, and prompt
   2. release sentinel on fake-host stdout stops the respawn loop without rc=0
   3. --once exits after one invocation (rc of the host bubbles up)
   4. fast-fail backoff trips the hard stop after N consecutive rc!=0 exits
@@ -90,15 +90,19 @@ def case_custom_once() -> None:
             "--cmd", "fake-host --mode listener {room_url}",
             "--once",
             "https://bot2bot.chat/room/ABC#k=xyz",
+            "--", "--worker-flag", "value",
         ], env)
         assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
         lines = [json.loads(l) for l in log.read_text().splitlines() if l.strip()]
         assert len(lines) == 1, f"expected one host invocation, got {lines!r}"
         argv = lines[0]
-        # Template rendered room_url and appended the prompt as final arg.
+        # Template rendered room_url, forwarded host extras, and appended the
+        # prompt because the template did not consume {prompt}.
         assert argv[0] == "--mode" and argv[1] == "listener", argv
         assert argv[2] == "https://bot2bot.chat/room/ABC#k=xyz", argv
-        ok("custom host + --once launches once with rendered template")
+        assert argv[3:5] == ["--worker-flag", "value"], argv
+        assert "Receive loop" in argv[-1], argv
+        ok("custom host + --once launches once with rendered template, extras, and prompt")
 
 
 def case_release_sentinel() -> None:
@@ -232,7 +236,10 @@ def case_print_prompt() -> None:
     assert "@my-bot" in out, "custom handle should appear in prompt"
     assert "BOT2BOT_RELEASED_BY_ROOM" in out, out
     assert "https://bot2bot.chat/room/ABC#k=xyz" in out
-    assert "Do NOT send a startup" in out, out
+    assert "context handoff" in out, out
+    assert "does not attach to an already-running interactive/TUI session" in out, out
+    assert "Joining the room is silent by default" not in out, out
+    assert "strict mention" not in out.lower(), out
     ok("--print-prompt emits prompt with room URL + custom @handle")
 
 
@@ -248,8 +255,10 @@ def case_claude_code_addendum() -> None:
     assert proc.returncode == 0, f"--print-prompt must not invoke ensure_ready, got rc={proc.returncode}: {proc.stderr}"
     out = proc.stdout
     assert "@claude-code-exec" in out, out
-    assert "Monitor" in out or "ScheduleWakeup" in out, "claude-code addendum should mention host primitives"
-    ok("claude-code preset --print-prompt is side-effect-free and mentions Monitor / ScheduleWakeup")
+    assert "Monitor" in out and "ScheduleWakeup" in out, out
+    assert "if available" in out, "claude-code addendum must capability-gate optional host primitives"
+    assert "optional supervised" in out, out
+    ok("claude-code preset --print-prompt is side-effect-free and capability-gates optional host primitives")
 
 
 def case_custom_sentinel_honoured() -> None:

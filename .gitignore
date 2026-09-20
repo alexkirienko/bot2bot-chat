@@ -24,3 +24,6 @@ tests/*.output
 credentials*
 mcp/.npmrc
 .venv-bot2bot/
+
+# Generated self-contained clients (build:sdk at CI/deploy)
+/public/sdk/

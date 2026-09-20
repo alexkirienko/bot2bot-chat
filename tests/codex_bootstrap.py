@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import http.server
 import os
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 
@@ -51,41 +53,65 @@ raise SystemExit(0)
 """
 
 
-FAKE_NPX = r"""#!/usr/bin/env python3
-import sys
-raise SystemExit(0)
-"""
-
-
 def make_exec(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+class BundleHandler(http.server.BaseHTTPRequestHandler):
+    """Serve a tiny first-party bundle for the bootstrap test."""
+
+    def do_GET(self):  # noqa: N802 - stdlib hook
+        if self.path != "/sdk/bot2bot-mcp.mjs":
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = b"// test bot2bot MCP bundle\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/javascript")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # noqa: A002 - stdlib hook name
+        return
+
+
 def run_case(argv: list[str], *, has_mcp: bool) -> list[list[str]]:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BundleHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    sep = argv.index("--") if "--" in argv else len(argv)
+    argv = [*argv[:sep], "--base", base, *argv[sep:]]
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         bindir = tmp / "bin"
         bindir.mkdir()
         log = tmp / "log.jsonl"
         make_exec(bindir / "codex", FAKE_CODEX)
-        make_exec(bindir / "npx", FAKE_NPX)
+        make_exec(bindir / "node", "#!/usr/bin/env python3\nraise SystemExit(0)\n")
         env = os.environ.copy()
         env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
         env["TEST_LOG"] = str(log)
         env["TEST_HAS_MCP"] = "1" if has_mcp else "0"
-        proc = subprocess.run(
-            [sys.executable, str(SCRIPT)] + argv,
-            cwd=ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            print(proc.stdout)
-            print(proc.stderr, file=sys.stderr)
-            raise SystemExit(proc.returncode)
-        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        env["XDG_CACHE_HOME"] = str(tmp / "cache")
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(SCRIPT)] + argv,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+            if proc.returncode != 0:
+                print(proc.stdout)
+                print(proc.stderr, file=sys.stderr)
+                raise SystemExit(proc.returncode)
+            return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
 
 
 def ok(msg: str) -> None:
@@ -94,8 +120,15 @@ def ok(msg: str) -> None:
 
 def main() -> int:
     calls = run_case(["--install-only"], has_mcp=False)
-    if calls != [["mcp", "get", "bot2bot"], ["mcp", "add", "bot2bot", "--", "npx", "-y", "bot2bot-mcp"]]:
+    if calls[0] != ["mcp", "get", "bot2bot"]:
         raise SystemExit(f"unexpected install calls: {calls!r}")
+    add = calls[1]
+    if add[:5] != ["mcp", "add", "bot2bot", "--env", next(x for x in add if x.startswith("BOT2BOT_BASE="))]:
+        raise SystemExit(f"unexpected install command: {add!r}")
+    if add[5] != "--" or not add[6].endswith("/node") or not add[7].endswith(".mjs"):
+        raise SystemExit(f"bootstrap must use local node + downloaded first-party .mjs bundle: {add!r}")
+    if "npx" in add or "bot2bot-mcp" == add[6]:
+        raise SystemExit(f"bootstrap must not depend on npm/npx package: {add!r}")
     ok("install-only configures bot2bot MCP when missing")
 
     calls = run_case(["--install-only"], has_mcp=True)
@@ -104,17 +137,21 @@ def main() -> int:
     ok("install-only leaves existing bot2bot MCP entry in place")
 
     calls = run_case(["--once", "https://bot2bot.chat/room/TEST#k=abc", "--", "-m", "gpt-5.4"], has_mcp=False)
-    if calls[:2] != [["mcp", "get", "bot2bot"], ["mcp", "add", "bot2bot", "--", "npx", "-y", "bot2bot-mcp"]]:
+    if calls[0] != ["mcp", "get", "bot2bot"] or calls[1][0:3] != ["mcp", "add", "bot2bot"]:
         raise SystemExit(f"unexpected launch prelude: {calls!r}")
+    if calls[1][3] != "--env" or not calls[1][4].startswith("BOT2BOT_BASE=") or calls[1][5] != "--":
+        raise SystemExit(f"unexpected launch bootstrap: {calls!r}")
     launch = calls[2]
-    if launch[:2] != ["-m", "gpt-5.4"]:
+    if launch[:3] != ["exec", "-m", "gpt-5.4"]:
         raise SystemExit(f"codex args were not forwarded: {launch!r}")
     if (
         "https://bot2bot.chat/room/TEST#k=abc" not in launch[-1]
         or "claim_task" not in launch[-1]
         or "BOT2BOT_RELEASED_BY_ROOM" not in launch[-1]
         or "operator is clearly dissatisfied" not in launch[-1]
-        or "Do NOT send a startup" not in launch[-1]
+        or "does not attach to an existing Codex TUI or interactive session" not in launch[-1]
+        or "codex exec" not in launch[-1]
+        or "context handoff" not in launch[-1]
         or "Reflex turn pattern" not in launch[-1]
         or "Worked example of a correct sequence" not in launch[-1]
     ):
@@ -130,20 +167,25 @@ def main() -> int:
         log = tmp / "log.jsonl"
         counter = tmp / "count"
         make_exec(bindir / "codex", FAKE_CODEX)
-        make_exec(bindir / "npx", FAKE_NPX)
         env = os.environ.copy()
         env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
         env["TEST_LOG"] = str(log)
         env["TEST_HAS_MCP"] = "1"
         env["TEST_EXEC_COUNT"] = str(counter)
         env["TEST_EXEC_MAX"] = "3"
+        env["HOME"] = str(tmp / "home")
+        env["XDG_CACHE_HOME"] = str(tmp / "cache")
+        (tmp / "home").mkdir()
+        failure_detail = ""
         try:
             subprocess.run(
                 [sys.executable, str(SCRIPT), "https://bot2bot.chat/room/TEST#k=abc"],
                 cwd=ROOT, env=env, text=True, capture_output=True, timeout=15,
             )
-        except subprocess.TimeoutExpired:
-            pass  # persistent mode doesn't exit on its own — timeout is expected.
+        except subprocess.TimeoutExpired as exc:
+            failure_detail = f"timeout stdout={exc.stdout!r}; stderr={exc.stderr!r}"
+        if not log.exists():
+            raise SystemExit(f"persistent Codex worker never launched: {failure_detail or 'subprocess returned without a log'}")
         calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
         launches = [c for c in calls if c and "claim_task" in (c[-1] or "")]
         if len(launches) < 3:
@@ -156,7 +198,6 @@ def main() -> int:
         log = tmp / "log.jsonl"
         counter = tmp / "count"
         make_exec(bindir / "codex", FAKE_CODEX)
-        make_exec(bindir / "npx", FAKE_NPX)
         env = os.environ.copy()
         env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
         env["TEST_LOG"] = str(log)
@@ -164,6 +205,9 @@ def main() -> int:
         env["TEST_EXEC_COUNT"] = str(counter)
         env["TEST_RELEASE_AT"] = "2"
         env["TEST_RELEASE_SENTINEL"] = "BOT2BOT_RELEASED_BY_ROOM"
+        env["HOME"] = str(tmp / "home")
+        env["XDG_CACHE_HOME"] = str(tmp / "cache")
+        (tmp / "home").mkdir()
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), "https://bot2bot.chat/room/TEST#k=abc"],
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=15,
@@ -190,13 +234,15 @@ def main() -> int:
         log = tmp / "log.jsonl"
         counter = tmp / "count"
         make_exec(bindir / "codex", FAKE_CODEX)
-        make_exec(bindir / "npx", FAKE_NPX)
         env = os.environ.copy()
         env["PATH"] = f"{bindir}:{env.get('PATH', '')}"
         env["TEST_LOG"] = str(log)
         env["TEST_HAS_MCP"] = "1"
         env["TEST_EXEC_COUNT"] = str(counter)
         env["TEST_EXEC_MAX"] = "99"  # keep the first launcher relaunching
+        env["HOME"] = str(tmp / "home")
+        env["XDG_CACHE_HOME"] = str(tmp / "cache")
+        (tmp / "home").mkdir()
         first = subprocess.Popen(
             [sys.executable, str(SCRIPT), url],
             cwd=ROOT, env=env, text=True,

@@ -69,6 +69,8 @@ def run():
         assert out.get("text") == "hello from peer 1", out
         assert out.get("sender") == "peer-agent", out
         assert "claim_id" in out and "seq" in out, out
+        assert out.get("sender_verified") is False, out
+        assert out.get("source") is None and out.get("source_metadata") is None, out
         ok("--next returns message as JSON + exit 0 and auto-creates identity")
         assert os.path.exists(id_path), "identity file was not persisted"
         ok("identity file persisted on first use")
@@ -86,6 +88,8 @@ def run():
         assert r.returncode == 0, (r.returncode, r.stdout, r.stderr)
         out = json.loads(r.stdout.strip())
         assert out["text"] == "hello from peer 2", out
+        assert out["sender_verified"] is False, out
+        assert out["source"] is None and out["source_metadata"] is None, out
         ok("--claim (no ack) returns message + exit 0")
 
         # Without acking, another --claim returns the SAME message (idempotent

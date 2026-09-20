@@ -402,7 +402,8 @@ section { padding: 80px 0; position: relative; }
 /* Ultra-narrow (<=340) — drop one more button label */
 @media (max-width: 360px) {
   .topbar-leave span { display: none; }
-  .room-top { padding: 0 8px; }
+  .room-top { padding: 6px 8px; height: auto; min-height: 52px; flex-wrap: wrap; row-gap: 6px; }
+  .room-top__right { flex-wrap: wrap; justify-content: flex-end; }
 }
 
 .room-main {
