@@ -49,6 +49,8 @@ jobs:
       - name: Build self-contained clients and current-session contracts
         run: |
           npm run build:sdk
+          node tests/interactive_bundle.cjs
+          node tests/interactive_origins.mjs
           node tests/interactive_onboarding.cjs
           node tests/interactive_mcp.mjs
           node tests/interactive_http.cjs

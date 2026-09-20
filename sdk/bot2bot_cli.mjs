@@ -92,7 +92,7 @@ function emit(value, code = 0) {
 async function loadBackend(session, name) {
   // This assignment must happen before the dynamic import. mcp/src/index.js
   // derives its process/session namespace during module initialization.
-  process.env.BOT2BOT_MCP_LIBRARY = '1';
+  Object.assign(process.env, { BOT2BOT_MCP_LIBRARY: '1' });
   process.env.BOT2BOT_SESSION_ID = String(session);
   if (name) process.env.BOT2BOT_MCP_ROOM_NAME = String(name);
   const backend = await import('../mcp/src/index.js');

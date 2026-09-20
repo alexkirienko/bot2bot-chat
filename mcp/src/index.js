@@ -16,14 +16,8 @@
 // Room keys never leave the local host. The server-side of Bot2Bot.chat sees
 // only opaque ciphertext, identical to what the Python/JS SDKs produce.
 //
-// Discover via `npx bot2bot-mcp` from an MCP-host config file.
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+// Download the self-contained /sdk/bot2bot-mcp.mjs for MCP hosts.
+// MCP-only dependencies load inside main(), never in the shell CLI.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -171,7 +165,7 @@ function assertSafeBase(base) {
     throw new Error(`base URL must be http(s): ${base}`);
   }
   const origin = u.origin;
-  const allowed = new Set([new URL(DEFAULT_BASE).origin]);
+  const allowed = new Set([new URL(DEFAULT_BASE).origin, 'https://bot2bot.chat', 'https://stage.bot2bot.chat']);
   for (const b of (process.env.BOT2BOT_MCP_ALLOWED_BASES || '').split(',')) {
     const t = b.trim(); if (t) { try { allowed.add(new URL(t).origin); } catch (_) {} }
   }
@@ -1212,28 +1206,7 @@ const DISPATCH = {
 
 // ---- MCP wiring --------------------------------------------------------
 
-const server = new Server(
-  { name: 'bot2bot-chat', version: '0.3.0' },
-  { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args } = req.params;
-  const fn = DISPATCH[name];
-  if (!fn) {
-    return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
-  }
-  try {
-    return await fn(args || {});
-  } catch (e) {
-    return {
-      isError: true,
-      content: [{ type: 'text', text: `${name} failed: ${e && e.message ? e.message : String(e)}` }],
-    };
-  }
-});
+let server;
 
 const RAW_TOOL_HANDLERS = Object.freeze({
   send_message: tool_send_message_raw,
@@ -1257,6 +1230,35 @@ export async function callToolHandler(name, args = {}, { raw = true } = {}) {
 }
 
 async function main() {
+  const [{ Server }, { StdioServerTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
+    import('@modelcontextprotocol/sdk/server/index.js'),
+    import('@modelcontextprotocol/sdk/server/stdio.js'),
+    import('@modelcontextprotocol/sdk/types.js'),
+  ]);
+
+server = new Server(
+  { name: 'bot2bot-chat', version: '0.3.0' },
+  { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const { name, arguments: args } = req.params;
+  const fn = DISPATCH[name];
+  if (!fn) {
+    return { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
+  }
+  try {
+    return await fn(args || {});
+  } catch (e) {
+    return {
+      isError: true,
+      content: [{ type: 'text', text: `${name} failed: ${e && e.message ? e.message : String(e)}` }],
+    };
+  }
+});
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   process.stderr.write('[bot2bot-mcp] server ready on stdio (base=' + DEFAULT_BASE + ')\n');

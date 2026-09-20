@@ -331,6 +331,10 @@ async function main() {
     assert.equal(typeof cliStatus.json?.last_seq, 'number');
     assert.equal(typeof cliStatus.json?.participants, 'number');
 
+    const autoBase = await runCli(['status', cliRoomUrl, '--session', cliSession], { ...cliEnv, BOT2BOT_BASE: '', BOT2BOT_MCP_ALLOWED_BASES: '' });
+    assert.equal(autoBase.code, 0, 'explicit room URL must work without extra env settings: ' + autoBase.stdout);
+    assert.equal(autoBase.json?.room?.base, base);
+
     const missingSession = await runCli(['send', cliRoomUrl, '--message', 'must fail'], cliEnv);
     assert.equal(missingSession.code, 2);
     assert.equal(missingSession.json?.ok, false);
