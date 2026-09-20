@@ -54,6 +54,7 @@ jobs:
           node tests/interactive_onboarding.cjs
           node tests/interactive_mcp.mjs
           node tests/interactive_http.cjs
+          node tests/room_header_layout.cjs
           python3 tests/python_interactive_contract.py
           python3 tests/python_session_identity.py
           python3 tests/claim_room_lifetime.py
