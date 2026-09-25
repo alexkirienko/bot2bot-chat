@@ -347,7 +347,7 @@ const TOOLS = [
     name: 'claim_task',
     description:
       'Two-step at-least-once primitive — step 1. Blocks up to `timeout_seconds` and returns the next foreign message WITHOUT acking. Returns a `claim_id` you must pass to `ack_task` once the host has fully processed the message. ' +
-      'If the host crashes between this call and ack_task (or simply never acks), the server claim expires after 60 s and the same message is re-delivered on the next claim_task call — this is the real at-least-once guarantee. ' +
+      'Claims last five minutes by default (configurable from 60–300 seconds). If the host crashes before ack_task, the message remains available for a new listener — at-least-once delivery. ' +
       'Prefer `next_task` if you want simpler ergonomics and can tolerate losing one message on host crash. ' +
       'If the message warrants a response, reply to the same room with `send_message` before `ack_task`.',
     inputSchema: {
@@ -356,6 +356,7 @@ const TOOLS = [
       properties: {
         url:             { type: 'string' },
         timeout_seconds: { type: 'integer', description: 'Max seconds to block (1–90). Default 60.', minimum: 1, maximum: 90 },
+        ttl_ms:          { type: 'integer', description: 'Claim lease (60000–300000 ms). Default 300000 for long Codex turns.', minimum: 60000, maximum: 300000 },
       },
     },
   },
@@ -363,7 +364,7 @@ const TOOLS = [
     name: 'ack_task',
     description:
       'Two-step at-least-once primitive — step 2. Advances the server cursor past a claim returned by `claim_task`. Idempotent: re-acking an already-advanced seq returns advanced:false, ok:true. ' +
-      'Mismatched (claim_id, seq) or an expired claim returns an error.',
+      'If the claim expires before ACK, reconciles the same seq with a fresh receipt; never ACKs a different seq.',
     inputSchema: {
       type: 'object',
       required: ['url', 'claim_id', 'seq'],
@@ -1041,7 +1042,7 @@ async function tool_room_status({ url }) {
 }
 
 async function doClaim(base, roomId, ident, timeoutSec, extraExclude, ttlMs) {
-  const ttl = Math.max(60000, Math.min(300000, Number(ttlMs) || 60000));
+  const ttl = Math.max(60000, Math.min(300000, Number(ttlMs) || 300000));
   const claimPath = `/api/rooms/${roomId}/claim?timeout=${timeoutSec}&ttl_ms=${ttl}`;
   // Merge session-local sender names (every label we've posted under in
   // this room via send_message) with any caller-supplied list. Prevents
@@ -1083,6 +1084,23 @@ async function doAck(base, roomId, ident, claim_id, seq) {
   return body;
 }
 
+// Recover an expired receipt *only* when the same seq is still pending.
+// Never advance a newer task because an older turn finished late.
+async function ackWithExpiredClaimRecovery(state, claimId, seq) {
+  try {
+    return await doAck(state.base, state.roomId, state.authIdentity, claimId, seq);
+  } catch (error) {
+    if (!/^ack failed: 409\b/.test(error.message)) throw error;
+    const fresh = await doClaim(state.base, state.roomId, state.authIdentity, 1,
+      [currentRoomLabel(state)], 300000);
+    if (Number(fresh.cursor) >= seq) return { ok: true, advanced: false, cursor: fresh.cursor };
+    if (!fresh.message || Number(fresh.message.seq) !== seq || !fresh.claim_id) {
+      throw new Error(`ack reconciliation refused: expected seq=${seq}, received seq=${fresh.message?.seq ?? 'none'}; original: ${error.message}`);
+    }
+    return doAck(state.base, state.roomId, state.authIdentity, fresh.claim_id, seq);
+  }
+}
+
 async function tool_claim_task_raw({ url, timeout_seconds = 60, ttl_ms }) {
   const parsed = parseRoomUrl(url);
   const t = Math.max(1, Math.min(90, Number(timeout_seconds) || 60));
@@ -1109,13 +1127,7 @@ async function tool_claim_task_raw({ url, timeout_seconds = 60, ttl_ms }) {
 async function tool_ack_task_raw({ url, claim_id, seq }) {
   const parsed = parseRoomUrl(url);
   const state = await ensureRoomState(parsed);
-  const result = await doAck(
-    parsed.base,
-    parsed.roomId,
-    state.authIdentity,
-    String(claim_id || ''),
-    Number(seq) || 0,
-  );
+  const result = await ackWithExpiredClaimRecovery(state, String(claim_id || ''), Number(seq) || 0);
   return { ...result, claim_id: String(claim_id || ''), seq: Number(seq) || 0, session_id: SESSION_ID };
 }
 
@@ -1153,12 +1165,12 @@ async function tool_next_task({ url, timeout_seconds = 60 }) {
   };
 }
 
-async function tool_claim_task({ url, timeout_seconds = 60 }) {
+async function tool_claim_task({ url, timeout_seconds = 60, ttl_ms }) {
   const parsed = parseRoomUrl(url);
   const notice = activeRoomNotice(parsed);
   const t = Math.max(1, Math.min(90, Number(timeout_seconds) || 60));
   const state = await ensureRoomState(parsed);
-  const claim = await claimSkippingAdopts(state, t);
+  const claim = await claimSkippingAdopts(state, t, undefined, ttl_ms);
   if (claim.empty || !claim.message) {
     return { content: [{ type: 'text', text: `(no new messages — blocked ${t}s as "${currentRoomLabel(state)}" via auth @${state.authIdentity.handle}, cursor=${claim.cursor || 0}; call claim_task again to keep listening)` + notice }] };
   }
@@ -1171,7 +1183,7 @@ async function tool_claim_task({ url, timeout_seconds = 60 }) {
       text:
         `[seq=${m.seq} id=${m.id}] ${m.sender}${verified}: ${text == null ? '[undecryptable — wrong room key]' : text}` +
         `\n\n(claim_id=${claim.claim_id} seq=${m.seq} — if the message warrants a reply, call send_message to the same room first, then call ack_task once you have fully processed it; ` +
-        `claim expires in 60s and re-delivers if you never ack)` +
+        `claim expires in ${Math.max(60, Math.min(300, Math.ceil((Number(ttl_ms) || 300000) / 1000)))}s and re-delivers if you never ack)` +
         notice,
     }],
   };
@@ -1181,7 +1193,7 @@ async function tool_ack_task({ url, claim_id, seq }) {
   const parsed = parseRoomUrl(url);
   setActiveRoom(parsed);
   const state = await ensureRoomState(parsed);
-  const r = await doAck(parsed.base, parsed.roomId, state.authIdentity, String(claim_id || ''), Number(seq) || 0);
+  const r = await ackWithExpiredClaimRecovery(state, String(claim_id || ''), Number(seq) || 0);
   return {
     content: [{
       type: 'text',

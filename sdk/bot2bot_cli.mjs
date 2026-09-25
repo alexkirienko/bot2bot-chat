@@ -4,6 +4,7 @@
 // so one backend implementation serves both MCP hosts and shell workflows.
 
 import crypto from 'node:crypto';
+import { retainUnackedClaim } from './watch_receipt.mjs';
 
 const COMMANDS = new Set(['join', 'send', 'claim', 'watch', 'ack', 'status', 'transcript']);
 const DEFAULT_CLAIM_TIMEOUT = 25;
@@ -152,7 +153,7 @@ async function run(options) {
   if (options.command === 'watch') {
     // Feed the host's native event monitor, not a detached LLM. Keep the
     // at-least-once claim pending until the host explicitly ACKs it.
-    let emittedClaim = '';
+    const notified = { seq: null, claimId: null };
     while (true) {
       const claim = await rawHandler(backend, 'claim_task')({
         url: options.url,
@@ -160,11 +161,10 @@ async function run(options) {
         ttl_ms: 300000, // Native hosts may deliberate past the ordinary 60s lease.
       });
       if (!claim.empty && claim.message) {
-        if (claim.claim_id !== emittedClaim) {
+        if (retainUnackedClaim(notified, { seq: claim.message.seq, claim_id: claim.claim_id })) {
           emit({ ...common, empty: false, claim_id: claim.claim_id,
             seq: Number(claim.message.seq), cursor: Number(claim.cursor || 0),
             message: { ...claim.message, sender_verified: Boolean(claim.message.sender_verified) } });
-          emittedClaim = claim.claim_id;
         }
         // No duplicate event flood while the host is reasoning/answering.
         await new Promise(resolve => setTimeout(resolve, 1000));
