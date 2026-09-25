@@ -281,6 +281,47 @@ async function main() {
     await observer.waitFor((events) => events.some((e) => e.type === 'message' && e.sender === `@${adoptedHandle}` && e.sender_verified === true));
     console.log('  ✓ post-adopt MCP send is signed as the promoted handle');
 
+    // An interactive Codex turn can exceed a claim lease. ACK must reconcile
+    // that exact seq, not re-deliver the already answered message to the host.
+    const foreign = encryptRoom(key, 'delayed-codex-answer');
+    const incoming = await fetch(`${BASE}/api/rooms/${roomId}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender: 'foreign-regression', ...foreign }),
+    });
+    if (!incoming.ok) throw new Error(`foreign post failed: ${incoming.status}`);
+    const original = await callTool(mcp, 5, 'claim_task', {
+      url: roomUrl, timeout_seconds: 2, ttl_ms: 60000,
+    });
+    const originalText = extractText(original);
+    if (!originalText.includes('delayed-codex-answer')) throw new Error(`missing foreign claim: ${originalText}`);
+    const claimId = originalText.match(/claim_id=([^\s)]+)/)?.[1];
+    const seq = Number(originalText.match(/seq=(\d+)/)?.[1]);
+    if (!claimId || !seq) throw new Error(`malformed claim receipt: ${originalText}`);
+    await new Promise((r) => setTimeout(r, 62000));
+    const ack = await callTool(mcp, 6, 'ack_task', { url: roomUrl, claim_id: claimId, seq });
+    if (!extractText(ack).includes(`cursor advanced to seq=${seq}`)) {
+      throw new Error(`expired claim did not reconcile: ${extractText(ack)}`);
+    }
+    const replay = await callTool(mcp, 7, 'claim_task', { url: roomUrl, timeout_seconds: 1 });
+    if (!extractText(replay).includes('(no new messages')) throw new Error('handled message replayed');
+    console.log('  ✓ >60s Codex turn ACKs without duplicate delivery');
+
+    const secondBody = encryptRoom(key, 'do-not-ack-wrong-seq');
+    const secondPost = await fetch(`${BASE}/api/rooms/${roomId}/messages`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender: 'foreign-regression', ...secondBody }),
+    });
+    if (!secondPost.ok) throw new Error(`second foreign post failed: ${secondPost.status}`);
+    const next = extractText(await callTool(mcp, 8, 'claim_task', { url: roomUrl, timeout_seconds: 2 }));
+    const nextId = next.match(/claim_id=([^\s)]+)/)?.[1];
+    const nextSeq = Number(next.match(/seq=(\d+)/)?.[1]);
+    if (!nextId || !nextSeq || !next.includes('claim expires in 300s')) throw new Error('default five-minute claim missing');
+    const wrong = extractText(await callTool(mcp, 9, 'ack_task', { url: roomUrl, claim_id: nextId, seq: nextSeq + 1 }));
+    if (!wrong.includes('ack reconciliation refused')) throw new Error('wrong seq was ACKed');
+    const right = extractText(await callTool(mcp, 10, 'ack_task', { url: roomUrl, claim_id: nextId, seq: nextSeq }));
+    if (!right.includes(`cursor advanced to seq=${nextSeq}`)) throw new Error('wrong ACK affected real claim');
+    console.log('  ✓ never reconciles a mismatched seq');
+
     console.log('\n✓ promotable-agent regression passed');
   } finally {
     if (observer) await observer.close();
