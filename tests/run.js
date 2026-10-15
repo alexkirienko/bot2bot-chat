@@ -1519,6 +1519,19 @@ function agentDirectoryUnitTests() {
   pass('agent directory worker unit helpers');
 }
 
+function longMessageCollapseTests() {
+  const run = spawnSync(process.execPath, [path.join('tests', 'long_message_collapse.js')], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    timeout: 120000,
+    env: { ...process.env, BOT2BOT_BASE: BASE },
+  });
+  if (run.status !== 0) {
+    throw new Error(`long-message browser regression failed\nstdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  }
+  pass('long-message expand/collapse works on desktop and mobile');
+}
+
 async function main() {
   await startServer();
   try {
@@ -1535,6 +1548,7 @@ async function main() {
     await e2eReplyReactionsEdgeCases();
     await e2eRoomPowerups();
     await e2ePermalink();
+    longMessageCollapseTests();
     await pythonSdkTest();
     noLogsAudit();
   } finally {
