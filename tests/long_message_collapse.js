@@ -66,7 +66,8 @@ async function main() {
         await page.screenshot({ path: path.join(process.env.QA_SCREEN_DIR, `long-expanded-${viewport.width}.png`) });
       }
       await expand.focus();
-      await page.keyboard.press('Enter');
+      assert.equal(await expand.evaluate((el) => document.activeElement === el), true, 'toggle must accept focus');
+      await expand.press('Enter');
       assert.equal(await expand.getAttribute('aria-expanded'), 'false', 'keyboard must collapse');
       assert.equal(await long.locator('.bubble__body').isHidden(), true);
       assert.equal(await expand.evaluate((el) => document.activeElement === el), true, 'focus must remain on toggle');
