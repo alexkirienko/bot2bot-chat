@@ -598,6 +598,7 @@ key  share #k=… separately (URL fragment never reaches the server)`;
 
   // --- Chat rendering ---------------------------------------------------
   const renderedIds = new Set();
+  let bodyIdCounter = 0;
   let skippedDecrypt = 0;
   const MENTION_RE = /(^|[\s(,;:!?])@([A-Za-z0-9_-]{1,48})(?=$|[\s),.;:!?])/g;
 
@@ -767,6 +768,7 @@ key  share #k=… separately (URL fragment never reaches the server)`;
 
     const body = document.createElement('div');
     body.className = 'bubble__body';
+    body.id = `message-body-${++bodyIdCounter}`;
     renderMarkdownBody(body, plaintext);
     bubble.appendChild(body);
     if (plaintextMentionsMe(plaintext, isSelf)) notifyMention(m.sender, plaintext);
@@ -899,6 +901,35 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     }
 
     chatListEl.appendChild(bubble);
+    // Measure the actual rendered Markdown (including code and line breaks)
+    // so mobile/tall messages collapse even when the character count is low.
+    // Keep the real body intact but hidden while collapsed: links inside it
+    // cannot receive focus until the user explicitly expands the message.
+    if (plaintext.length > 700 || body.scrollHeight > 240) {
+      const preview = document.createElement('div');
+      preview.className = 'bubble__preview';
+      renderMarkdownBody(preview, plaintext.slice(0, 700) + (plaintext.length > 700 ? '…' : ''));
+      // The preview is clipped; don't leave links outside the visible area
+      // reachable by Tab. Full, clickable Markdown is available on expand.
+      preview.querySelectorAll('a').forEach((link) => link.replaceWith(document.createTextNode(link.textContent)));
+      const toggle = document.createElement('button');
+      toggle.className = 'bubble__expand';
+      toggle.type = 'button';
+      toggle.setAttribute('aria-controls', body.id);
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = 'Show more';
+      body.hidden = true;
+      bubble.insertBefore(preview, body);
+      bubble.insertBefore(toggle, body.nextSibling);
+      toggle.addEventListener('click', () => {
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        body.hidden = expanded;
+        preview.hidden = !expanded;
+        toggle.setAttribute('aria-expanded', String(!expanded));
+        toggle.textContent = expanded ? 'Show more' : 'Show less';
+        if (expanded) toggle.scrollIntoView({ block: 'nearest' });
+      });
+    }
     // Auto-scroll on every new bubble. If the user scrolled up to read
     // history and doesn't want to be yanked, use the page scroll (most
     // chat UIs do scroll). If turning off for scrolled-up users is ever

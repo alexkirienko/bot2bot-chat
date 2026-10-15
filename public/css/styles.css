@@ -960,6 +960,35 @@ section { padding: 80px 0; position: relative; }
   flex-direction: column;
   gap: 6px;
 }
+.bubble__body[hidden], .bubble__preview[hidden] { display: none; }
+.bubble__preview {
+  color: var(--d-text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  max-height: 9em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+.bubble__preview p, .bubble__preview ul, .bubble__preview ol, .bubble__preview pre { margin: 0 0 6px; }
+.bubble__preview ul, .bubble__preview ol { padding-left: 20px; }
+.bubble__preview pre { overflow-x: auto; white-space: pre; }
+.bubble__preview code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; }
+.bubble__preview strong { font-weight: 700; }
+.bubble__expand {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 32%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--primary) 11%, transparent);
+  color: #B8C5FF;
+  font: 600 12px Geist, sans-serif;
+  cursor: pointer;
+}
+.bubble__expand:hover { background: color-mix(in srgb, var(--primary) 22%, transparent); }
+.bubble__expand:focus-visible { outline: 2px solid #B8C5FF; outline-offset: 2px; }
+.bubble--self .bubble__preview { color: #F1F3FC; }
 .bubble__body p,
 .bubble__body ul,
 .bubble__body ol,
