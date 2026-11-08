@@ -600,6 +600,7 @@ key  share #k=… separately (URL fragment never reaches the server)`;
   const renderedIds = new Set();
   let bodyIdCounter = 0;
   let skippedDecrypt = 0;
+  const memoryFiles = new Map(); // fallback if IndexedDB is unavailable
   const MENTION_RE = /(^|[\s(,;:!?])@([A-Za-z0-9_-]{1,48})(?=$|[\s),.;:!?])/g;
 
   function inlineMdToHtml(text) {
@@ -675,6 +676,103 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     return false;
   }
 
+  function fileSizeLabel(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  function renderFileCard(parentId, meta, ready = false, error = '') {
+    if (!parentId || deletedIds.has(parentId)) return;
+    const bubble = chatListEl.querySelector(`.bubble[data-msg-id="${CSS.escape(parentId)}"]`);
+    if (!bubble) return; // manifest may arrive after the chunks
+    let row = bubble.querySelector('.bubble__file');
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'bubble__file';
+      bubble.appendChild(row);
+    }
+    row.replaceChildren();
+    const name = document.createElement('span');
+    name.className = 'bubble__file-name';
+    name.textContent = meta.name;
+    const status = document.createElement('span');
+    status.className = 'bubble__file-status';
+    status.textContent = error || fileSizeLabel(meta.size);
+    const button = document.createElement('button');
+    button.className = 'bubble__file-download';
+    button.type = 'button';
+    button.disabled = !ready;
+    button.textContent = ready ? 'Download' : (error ? 'Unavailable' : `Receiving ${meta.received}/${meta.total}`);
+    button.setAttribute('aria-label', `Download ${meta.name}`);
+    button.addEventListener('click', async () => {
+      const saved = await window.Bot2BotHistory?.loadAttachment(roomId, parentId) || memoryFiles.get(parentId);
+      if (!saved || deletedIds.has(parentId)) { showToast('File is no longer available', false); return; }
+      const blob = saved.data;
+      if (!(blob instanceof Blob) || blob.size !== saved.size) { showToast('File is incomplete', false); return; }
+      const link = document.createElement('a');
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = window.Bot2BotFiles.nameOf(saved.name);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    });
+    row.append(name, status, button);
+    const text = bubble.querySelector('.bubble__body');
+    if (text) text.hidden = true; // replace the plain-text manifest with the file card
+  }
+
+  function tryApplyFileEnvelope(msg) {
+    const plaintext = C.decrypt(key, msg.ciphertext, msg.nonce);
+    if (!plaintext || plaintext.charCodeAt(0) !== 123) return false;
+    let env;
+    try { env = JSON.parse(plaintext); } catch (_) { return false; }
+    if (!env || env.bot2bot_file_v1 !== 1) return false;
+    const result = window.Bot2BotFiles.accept(env, msg.sender);
+    if (!result || deletedIds.has(env.parent_id)) return true;
+    const { state } = result;
+    if (result.kind === 'progress') {
+      renderFileCard(state.parentId, state);
+      return true;
+    }
+    // The last chunk is not downloadable until the complete binary digest
+    // matches. Never render supplied bytes as HTML or trust a MIME type.
+    (async () => {
+      try {
+        const actual = await window.Bot2BotFiles.digest(result.bytes);
+        if (actual !== state.sha256) throw new Error('checksum mismatch');
+        if (deletedIds.has(state.parentId)) return;
+        const manifest = knownMessages.get(state.parentId);
+        if (!manifest || manifest.sender !== state.sender ||
+            manifest.text !== `📎 File: ${state.name} (${fileSizeLabel(state.size)}) [SHA-256: ${state.sha256}]`) {
+          throw new Error('file manifest does not bind the received bytes');
+        }
+        const record = {
+          name: state.name, size: state.size, sha256: state.sha256, sender: state.sender,
+          data: new Blob([result.bytes], { type: 'application/octet-stream' }),
+          ts: manifest?.ts || msg.ts || Date.now(),
+          ttl_ms: manifest?.ttl_ms || msg.ttl_ms || 0,
+        };
+        try { await window.Bot2BotHistory.saveAttachment(roomId, state.parentId, record); }
+        catch (_) {
+          memoryFiles.set(state.parentId, record);
+          if (memoryFiles.size > 2) memoryFiles.delete(memoryFiles.keys().next().value);
+          showToast('File received, but local storage is full — download it before refreshing', false);
+        }
+        if (deletedIds.has(state.parentId)) {
+          memoryFiles.delete(state.parentId);
+          await window.Bot2BotHistory.deleteAttachment(roomId, state.parentId);
+          return;
+        }
+        renderFileCard(state.parentId, record, true);
+      } catch (_) {
+        renderFileCard(state.parentId, state, false, 'Verification failed — ask sender to resend');
+      }
+    })();
+    return true;
+  }
+
   // Accepts either a server envelope (with ciphertext/nonce for decrypt)
   // or a cache record (with a pre-decrypted `text` field from IDB). Second
   // form lets local history replay on room open without round-tripping
@@ -714,7 +812,8 @@ key  share #k=… separately (URL fragment never reaches the server)`;
                    || probe.bot2bot_hist_req_v1 === true
                    || probe.bot2bot_hist_resp_v1 === true
                    || probe.bot2bot_delete_v1 === true
-                   || probe.bot2bot_react_v1 === true)) {
+                   || probe.bot2bot_react_v1 === true
+                   || probe.bot2bot_file_v1 === 1)) {
           // Evict a prior stale cache entry if present.
           try { window.Bot2BotHistory && window.Bot2BotHistory.evict && window.Bot2BotHistory.evict(roomId, m.seq); } catch (_) {}
           return;
@@ -901,6 +1000,17 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     }
 
     chatListEl.appendChild(bubble);
+    if (plaintext.startsWith('📎 File: ') && m.id && window.Bot2BotHistory) {
+      window.Bot2BotHistory.loadAttachment(roomId, m.id).then((saved) => {
+        if (saved && (saved.sender !== m.sender ||
+            plaintext !== `📎 File: ${saved.name} (${fileSizeLabel(saved.size)}) [SHA-256: ${saved.sha256}]`)) {
+          window.Bot2BotHistory.deleteAttachment(roomId, m.id);
+        } else if (saved && !deletedIds.has(m.id)) renderFileCard(m.id, saved, true);
+      });
+    }
+    if (m.id && window.Bot2BotFiles && window.Bot2BotFiles.get(m.id)) {
+      renderFileCard(m.id, window.Bot2BotFiles.get(m.id));
+    }
     // Measure the actual rendered Markdown (including code and line breaks)
     // so mobile/tall messages collapse even when the character count is low.
     // Keep the real body intact but hidden while collapsed: links inside it
@@ -2029,6 +2139,10 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     } else if (threadRootId) {
       try { renderThreadPane(threadRootId); } catch (_) {}
     }
+    // Deleting a manifest also erases its locally decrypted file bytes.
+    window.Bot2BotFiles?.remove(targetId);
+    memoryFiles.delete(targetId);
+    window.Bot2BotHistory?.deleteAttachment(roomId, targetId);
     // Evict DOM bubble.
     const el = chatListEl.querySelector(`.bubble[data-msg-id="${CSS.escape(targetId)}"]`);
     if (el) el.remove();
@@ -2315,6 +2429,7 @@ key  share #k=… separately (URL fragment never reaches the server)`;
         if (tryApplyAdoptEnvelope(obj)) return;
         if (tryApplyDeleteEnvelope(obj)) return;
         if (tryApplyReactEnvelope(obj)) return;
+        if (tryApplyFileEnvelope(obj)) return;
         if (tryApplyHistEnvelope(obj)) return;
         renderMessage(obj);
       }
@@ -2479,6 +2594,68 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     if (ws && ws.readyState === 1) ws.send(payload);
     else sendQueue.push(payload);
   }
+
+  const attachBtn = document.getElementById('attach-btn');
+  const fileInput = document.getElementById('file-input');
+  let fileUploadActive = false;
+  async function postFileMessage(plaintext, replyId = '') {
+    const { ciphertext, nonce } = C.encrypt(key, plaintext);
+    const body = { sender: me, ciphertext, nonce };
+    if (identity) Object.assign(body, await identity.signRoomMessage(roomId, ciphertext));
+    if (pendingSignedOnlyLock && identity) body.signed_only = true;
+    if (currentTtlMs > 0) body.ttl_ms = currentTtlMs;
+    if (replyId) body.reply_to = replyId;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const response = await fetch(`/api/rooms/${roomId}/messages`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
+      });
+      // An explicit 429 means the relay rejected the message. Never retry
+      // ambiguous network errors, which might have been accepted already.
+      if (response.status === 429 && attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        continue;
+      }
+      if (!response.ok) throw new Error(`Relay rejected file transfer (HTTP ${response.status})`);
+      const result = await response.json();
+      if (!result.ok || !result.id) throw new Error('Relay did not confirm the file message');
+      return result;
+    }
+    throw new Error('Relay rate limit exceeded');
+  }
+  async function uploadFile(file) {
+    if (!file || fileUploadActive) return;
+    if (file.size > window.Bot2BotFiles.MAX_BYTES) {
+      showToast('File too large — maximum 10 MiB', false);
+      return;
+    }
+    fileUploadActive = true;
+    attachBtn.disabled = true;
+    const hint = chatHintEl.textContent;
+    let started = false;
+    try {
+      chatHintEl.textContent = 'Encrypting file locally…';
+      const prepared = await window.Bot2BotFiles.create(file);
+      const replyId = replyingTo?.id || '';
+      const manifest = await postFileMessage(`📎 File: ${prepared.name} (${fileSizeLabel(prepared.size)}) [SHA-256: ${prepared.sha256}]`, replyId);
+      started = true;
+      if (replyId && replyingTo?.id === replyId) setReplyingTo(null);
+      for (let index = 0; index < prepared.total; index++) {
+        chatHintEl.textContent = `Sending encrypted file ${index + 1}/${prepared.total}…`;
+        await postFileMessage(JSON.stringify(prepared.chunk(manifest.id, index)));
+      }
+      showToast(`File sent: ${prepared.name}`, true);
+    } catch (e) {
+      showToast(started ? 'File transfer incomplete — please resend' : (e.message || 'File could not be sent'), false);
+    } finally {
+      fileUploadActive = false;
+      attachBtn.disabled = false;
+      fileInput.value = '';
+      chatHintEl.textContent = hint;
+    }
+  }
+  attachBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => uploadFile(fileInput.files?.[0]));
 
   const DEFAULT_HINT = chatHintEl.textContent;
   composerEl.addEventListener('submit', (ev) => {
