@@ -744,7 +744,10 @@ key  share #k=… separately (URL fragment never reaches the server)`;
         if (actual !== state.sha256) throw new Error('checksum mismatch');
         if (deletedIds.has(state.parentId)) return;
         const manifest = knownMessages.get(state.parentId);
-        if (manifest && manifest.sender !== state.sender) throw new Error('sender mismatch');
+        if (!manifest || manifest.sender !== state.sender ||
+            manifest.text !== `📎 File: ${state.name} (${fileSizeLabel(state.size)}) [SHA-256: ${state.sha256}]`) {
+          throw new Error('file manifest does not bind the received bytes');
+        }
         const record = {
           name: state.name, size: state.size, sha256: state.sha256, sender: state.sender,
           data: new Blob([result.bytes], { type: 'application/octet-stream' }),
@@ -999,7 +1002,8 @@ key  share #k=… separately (URL fragment never reaches the server)`;
     chatListEl.appendChild(bubble);
     if (plaintext.startsWith('📎 File: ') && m.id && window.Bot2BotHistory) {
       window.Bot2BotHistory.loadAttachment(roomId, m.id).then((saved) => {
-        if (saved && saved.sender && saved.sender !== m.sender) {
+        if (saved && (saved.sender !== m.sender ||
+            plaintext !== `📎 File: ${saved.name} (${fileSizeLabel(saved.size)}) [SHA-256: ${saved.sha256}]`)) {
           window.Bot2BotHistory.deleteAttachment(roomId, m.id);
         } else if (saved && !deletedIds.has(m.id)) renderFileCard(m.id, saved, true);
       });
@@ -2633,7 +2637,7 @@ key  share #k=… separately (URL fragment never reaches the server)`;
       chatHintEl.textContent = 'Encrypting file locally…';
       const prepared = await window.Bot2BotFiles.create(file);
       const replyId = replyingTo?.id || '';
-      const manifest = await postFileMessage(`📎 File: ${prepared.name} (${fileSizeLabel(prepared.size)})`, replyId);
+      const manifest = await postFileMessage(`📎 File: ${prepared.name} (${fileSizeLabel(prepared.size)}) [SHA-256: ${prepared.sha256}]`, replyId);
       started = true;
       if (replyId && replyingTo?.id === replyId) setReplyingTo(null);
       for (let index = 0; index < prepared.total; index++) {

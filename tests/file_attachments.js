@@ -62,6 +62,7 @@ async function main() {
     const transcript = await (await fetch(`${BASE}/api/rooms/${roomId}/transcript?after=0&limit=20`)).json();
     const payloads = fileMessages(transcript.messages, key);
     assert.equal(payloads.length, 5, 'one manifest + four encrypted chunks expected');
+    assert.equal(payloads[0], `📎 File: ${filename} (146.8 KiB) [SHA-256: ${crypto.createHash('sha256').update(bytes).digest('hex')}]`);
     assert.deepEqual(payloads.slice(1).map((p) => p.index), [0, 1, 2, 3]);
     assert.ok(transcript.messages.every((m) => !JSON.stringify(m).includes(filename) && !('data' in m)),
       'relay must not receive plaintext filename or file data');
@@ -92,6 +93,32 @@ async function main() {
     await sender.locator('#toast-text').getByText('File too large', { exact: false }).waitFor({ timeout: 3000 });
     const after = await (await fetch(`${BASE}/api/rooms/${roomId}/transcript?after=0&limit=20`)).json();
     assert.equal(fileMessages(after.messages, key).length, 5, 'oversized file must never be sent');
+
+    // A peer with the room key can copy an unsigned sender label. A digest
+    // only inside the chunk is attacker-controlled; the manifest must anchor
+    // the expected bytes before the download becomes available.
+    const forgedId = await sender.evaluate(async ({ roomId, key }) => {
+      const api = window.Bot2BotCrypto;
+      const post = async (text) => {
+        const r = await fetch(`/api/rooms/${roomId}/messages`, { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sender: 'unsigned-peer', ...api.encrypt(api.b64urlDecode(key), text) }) });
+        if (!r.ok) throw new Error(`POST ${r.status}`);
+        return r.json();
+      };
+      const sha = async (s) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))),
+        (b) => b.toString(16).padStart(2, '0')).join('');
+      const goodHash = await sha('good');
+      const evilHash = await sha('evil');
+      const manifest = await post(`📎 File: bound.bin (4 B) [SHA-256: ${goodHash}]`);
+      await post(JSON.stringify({ bot2bot_file_v1: 1, bot2bot_hist_resp_v1: true, type: 'chunk',
+        parent_id: manifest.id, file_id: crypto.randomUUID(), name: 'bound.bin', size: 4,
+        total: 1, index: 0, sha256: evilHash, data: btoa('evil') }));
+      return manifest.id;
+    }, { roomId, key });
+    const forged = receiver.locator(`.bubble[data-msg-id="${forgedId}"]`);
+    await forged.locator('.bubble__file-status', { hasText: 'Verification failed' }).waitFor({ timeout: 10000 });
+    assert.equal(await forged.locator('.bubble__file-download').isDisabled(), true);
 
     // A forged digest must not produce a clickable download or execute a
     // hostile filename as markup. This uses the real encrypted relay path.
