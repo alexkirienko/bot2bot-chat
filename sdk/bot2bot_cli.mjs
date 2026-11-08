@@ -5,8 +5,9 @@
 
 import crypto from 'node:crypto';
 import { retainUnackedClaim } from './watch_receipt.mjs';
+import { isFileChunkText } from '../mcp/src/file-transfer.js';
 
-const COMMANDS = new Set(['join', 'send', 'claim', 'watch', 'ack', 'status', 'transcript']);
+const COMMANDS = new Set(['join', 'send', 'send-file', 'download-file', 'claim', 'watch', 'ack', 'status', 'transcript']);
 const DEFAULT_CLAIM_TIMEOUT = 25;
 
 function usageError(code, message) {
@@ -17,12 +18,13 @@ function usageError(code, message) {
 
 function parseArgs(argv) {
   const command = argv.shift();
-  if (!COMMANDS.has(command)) usageError('usage', 'command must be join, send, claim, watch, ack, status, or transcript');
+  if (!COMMANDS.has(command)) usageError('usage', 'command must be join, send, send-file, download-file, claim, watch, ack, status, or transcript');
   const url = argv.shift();
   if (!url || url.startsWith('--')) usageError('usage', 'a room URL is required');
   const options = { command, url };
   const takesValue = new Set([
     '--session', '--name', '--message', '--timeout', '--claim-id', '--seq', '--after', '--limit',
+    '--path', '--message-id', '--out',
   ]);
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -46,6 +48,10 @@ function parseArgs(argv) {
   }
   if (command === 'send' && !String(options.message || '').trim()) {
     usageError('missing_message', 'send requires --message');
+  }
+  if (command === 'send-file' && !options.path) usageError('missing_path', 'send-file requires --path');
+  if (command === 'download-file' && (!options.messageId || !options.out)) {
+    usageError('missing_file_args', 'download-file requires --message-id and --out');
   }
   return options;
 }
@@ -120,11 +126,12 @@ async function run(options) {
   if (options.command === 'join') {
     // Transcript is deliberately bounded and immediate: joining must not wait
     // for a peer message before publishing the substantive handoff.
-    const transcript = await rawHandler(backend, 'get_transcript')({
+    const transcript = await rawHandler(backend, 'get_visible_transcript')({
       url: options.url,
       after_seq: 0,
       limit: 100,
     });
+    transcript.messages = (transcript.messages || []).filter(m => !isFileChunkText(m.text));
     const sent = await rawHandler(backend, 'send_message')({
       url: options.url,
       text: options.message,
@@ -148,6 +155,17 @@ async function run(options) {
       name: options.name,
     });
     return { ...common, ...sent, sender_verified: Boolean(sent.sender_verified) };
+  }
+
+  if (options.command === 'send-file') {
+    const sent = await rawHandler(backend, 'send_file')({ url: options.url, path: options.path, name: options.name });
+    return { ...common, ...sent };
+  }
+
+  if (options.command === 'download-file') {
+    const saved = await rawHandler(backend, 'download_file')({ url: options.url,
+      message_id: options.messageId, output_path: options.out });
+    return { ...common, ...saved };
   }
 
   if (options.command === 'watch') {
@@ -214,12 +232,12 @@ async function run(options) {
     return { ...common, ...status };
   }
 
-  const transcript = await rawHandler(backend, 'get_transcript')({
+  const transcript = await rawHandler(backend, 'get_visible_transcript')({
     url: options.url,
     after_seq: Number(options.after || 0),
     limit: Math.max(1, Math.min(500, Number(options.limit) || 100)),
   });
-  transcript.messages = (transcript.messages || []).map((message) => ({
+  transcript.messages = (transcript.messages || []).filter(m => !isFileChunkText(m.text)).map((message) => ({
     ...message,
     sender_verified: Boolean(message.sender_verified),
   }));
