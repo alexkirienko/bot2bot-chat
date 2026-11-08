@@ -21,8 +21,13 @@
   const DB_NAME = 'bot2bot-chat';
   const DB_VERSION = 1;
   const STORE = 'messages';
+  // Separate database: upgrading bot2bot-chat would block on older tabs
+  // that still hold its version-1 connection open.
+  const FILE_DB_NAME = 'bot2bot-files-v1';
+  const FILES = 'attachments';
 
   let dbPromise = null;
+  let filesDbPromise = null;
 
   function open() {
     if (dbPromise) return dbPromise;
@@ -40,6 +45,17 @@
       req.onerror = () => reject(req.error);
     });
     return dbPromise;
+  }
+  function openFiles() {
+    if (filesDbPromise) return filesDbPromise;
+    filesDbPromise = new Promise((resolve, reject) => {
+      if (!global.indexedDB) { reject(new Error('IndexedDB unavailable')); return; }
+      const req = indexedDB.open(FILE_DB_NAME, 1);
+      req.onupgradeneeded = () => req.result.createObjectStore(FILES, { keyPath: ['roomId', 'messageId'] });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return filesDbPromise;
   }
 
   // Save one message. Idempotent on [roomId, seq] — a re-render of the
@@ -131,7 +147,8 @@
                  || p.bot2bot_hist_req_v1 === true
                  || p.bot2bot_hist_resp_v1 === true
                  || p.bot2bot_delete_v1 === true
-                 || p.bot2bot_react_v1 === true)) continue;
+                 || p.bot2bot_react_v1 === true
+                 || p.bot2bot_file_v1 === 1)) continue;
         } catch (_) { /* not JSON */ }
       }
       seen += 1;
@@ -177,20 +194,34 @@
       const db = await open();
       await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, 'readwrite');
-        const store = tx.objectStore(STORE);
-        const range = IDBKeyRange.bound([roomId, 0], [roomId, Number.MAX_SAFE_INTEGER]);
-        const req = store.openCursor(range);
+        const req = tx.objectStore(STORE).openCursor(IDBKeyRange.bound([roomId, 0], [roomId, Number.MAX_SAFE_INTEGER]));
         req.onsuccess = () => {
           const cur = req.result;
           if (!cur) return;
           const v = cur.value;
-          if (v && v.ttl_ms && (v.ts + v.ttl_ms) <= now) cur.delete();
+          if (v && v.ttl_ms && v.ts + v.ttl_ms <= now) cur.delete();
           cur.continue();
         };
         tx.oncomplete = resolve;
         tx.onerror = () => reject(tx.error);
       });
-    } catch (_) { /* best-effort */ }
+    } catch (_) { /* best effort */ }
+    try {
+      const db = await openFiles();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(FILES, 'readwrite');
+        const req = tx.objectStore(FILES).openCursor(IDBKeyRange.bound([roomId, ''], [roomId, '\uffff']));
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (!cur) return;
+          const v = cur.value;
+          if (v && v.ttl_ms && v.ts + v.ttl_ms <= now) cur.delete();
+          cur.continue();
+        };
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) { /* best effort */ }
   }
 
   // Remove a single cached item (by seq) — used to evict stale protocol
@@ -200,12 +231,18 @@
     if (typeof seq !== 'number') return;
     try {
       const db = await open();
+      let cachedId = '';
       await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, 'readwrite');
-        tx.objectStore(STORE).delete([roomId, seq]);
+        const req = tx.objectStore(STORE).get([roomId, seq]);
+        req.onsuccess = () => {
+          cachedId = req.result?.id || '';
+          tx.objectStore(STORE).delete([roomId, seq]);
+        };
         tx.oncomplete = resolve;
         tx.onerror = () => reject(tx.error);
       });
+      if (cachedId) await deleteAttachment(roomId, cachedId);
     } catch (_) { /* best-effort */ }
   }
 
@@ -228,10 +265,61 @@
         tx.oncomplete = resolve;
         tx.onerror = () => reject(tx.error);
       });
+      const filesDb = await openFiles();
+      await new Promise((resolve, reject) => {
+        const tx = filesDb.transaction(FILES, 'readwrite');
+        const req = tx.objectStore(FILES).openCursor(IDBKeyRange.bound([roomId, ''], [roomId, '\uffff']));
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (cur) { cur.delete(); cur.continue(); }
+        };
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
     } catch (e) {
       console.warn('[bot2bot history] clear failed:', e && e.message);
     }
   }
 
-  global.Bot2BotHistory = { save, loadAll, lastSeq, clear, serialize, mergeAll, evict, sweepExpired };
+  // Decrypted files share the per-browser trust boundary of plaintext
+  // messages. A cleared/deleted/expired room must clear these bytes too.
+  async function saveAttachment(roomId, messageId, item) {
+    const db = await openFiles();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(FILES, 'readwrite');
+      tx.objectStore(FILES).put({ ...item, roomId, messageId });
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('attachment storage aborted'));
+    });
+  }
+  async function loadAttachment(roomId, messageId) {
+    try {
+      const db = await openFiles();
+      const item = await new Promise((resolve, reject) => {
+        const req = db.transaction(FILES, 'readonly').objectStore(FILES).get([roomId, messageId]);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+      if (item && item.ttl_ms && item.ts + item.ttl_ms <= Date.now()) {
+        await deleteAttachment(roomId, messageId);
+        return null;
+      }
+      return item;
+    } catch (_) { return null; }
+  }
+  async function deleteAttachment(roomId, messageId) {
+    try {
+      const db = await openFiles();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(FILES, 'readwrite');
+        tx.objectStore(FILES).delete([roomId, messageId]);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (_) { /* best effort */ }
+  }
+
+  global.Bot2BotHistory = { save, loadAll, lastSeq, clear, serialize, mergeAll, evict, sweepExpired,
+    saveAttachment, loadAttachment, deleteAttachment };
 }(typeof window !== 'undefined' ? window : globalThis));

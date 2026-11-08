@@ -510,6 +510,14 @@ section { padding: 80px 0; position: relative; }
 }
 .composer-main__inner { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 8px; }
 .composer-main__row { display: flex; gap: 10px; align-items: flex-end; }
+.chat__attach {
+  width: 42px; height: 42px; flex: 0 0 42px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--d-border); border-radius: 12px;
+  background: var(--d-surface); color: var(--d-text-2); cursor: pointer;
+}
+.chat__attach:hover, .chat__attach:focus-visible { color: var(--d-text); border-color: var(--primary); outline: none; }
+.chat__attach:disabled { opacity: .5; cursor: progress; }
 .composer-main textarea {
   flex: 1; resize: none; min-height: 42px; max-height: 160px;
   background: var(--d-surface); color: var(--d-text);
@@ -961,6 +969,16 @@ section { padding: 80px 0; position: relative; }
   gap: 6px;
 }
 .bubble__body[hidden], .bubble__preview[hidden] { display: none; }
+.bubble__file { display: flex; align-items: center; gap: 10px; min-width: 0; margin-top: 4px; }
+.bubble__file-name { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.bubble__file-status { color: var(--d-text-3); font-size: 12px; }
+.bubble__file-download {
+  flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--primary) 36%, transparent);
+  border-radius: 7px; padding: 5px 9px; background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: #B8C5FF; font: 600 12px Geist, sans-serif; cursor: pointer;
+}
+.bubble__file-download:hover, .bubble__file-download:focus-visible { border-color: #B8C5FF; outline: none; }
+.bubble__file-download:disabled { opacity: .55; cursor: default; }
 .bubble__preview {
   color: var(--d-text);
   overflow-wrap: anywhere;

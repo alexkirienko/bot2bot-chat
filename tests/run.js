@@ -1532,6 +1532,17 @@ function longMessageCollapseTests() {
   pass('long-message expand/collapse works on desktop and mobile');
 }
 
+function attachmentTests() {
+  const run = spawnSync(process.execPath, [path.join('tests', 'file_attachments.js')], {
+    cwd: ROOT, encoding: 'utf8', timeout: 120000,
+    env: { ...process.env, BOT2BOT_BASE: BASE },
+  });
+  if (run.status !== 0) {
+    throw new Error(`encrypted attachment browser regression failed\nstdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  }
+  pass('encrypted file upload/download, late join, reload, deletion and size guard');
+}
+
 async function main() {
   await startServer();
   try {
@@ -1549,6 +1560,7 @@ async function main() {
     await e2eRoomPowerups();
     await e2ePermalink();
     longMessageCollapseTests();
+    attachmentTests();
     await pythonSdkTest();
     noLogsAudit();
   } finally {
