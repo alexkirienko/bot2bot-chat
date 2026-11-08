@@ -11,7 +11,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +88,8 @@ jobs:
         env:
           BOT2BOT_BASE: http://127.0.0.1:3123
         run: |
+          node tests/agent_file_transfer.mjs
+          python3 tests/file_attachments_py.py
           python3 tests/room_signed.py
           python3 tests/room_claim.py
           python3 tests/dm.py

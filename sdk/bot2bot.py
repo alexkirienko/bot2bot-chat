@@ -39,12 +39,18 @@ Dependencies:  pynacl  requests  sseclient-py
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 import json
+import os
 import re
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -105,6 +111,53 @@ def report_bug(
 
 
 _B64URL_PAD_RE = re.compile(r"=+$")
+_FILE_MAX_BYTES = 10 * 1024 * 1024
+_FILE_CHUNK_BYTES = 48 * 1024
+_FILE_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_FILE_NAME_STRIP_RE = re.compile(r"[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
+
+
+def _attachment_name(path: str) -> str:
+    """Return the safe basename used by the browser file-transfer protocol."""
+    basename = re.split(r"[\\/]", path)[-1]
+    return _FILE_NAME_STRIP_RE.sub("", basename).strip()[:180] or "attachment"
+
+
+def _attachment_size_label(size: int) -> str:
+    """Format the manifest size exactly like the browser's fileSizeLabel."""
+    if size < 1024:
+        return f"{size} B"
+    divisor, suffix = (1024, "KiB") if size < 1024 * 1024 else (1024 * 1024, "MiB")
+    tenths, remainder = divmod(size * 10, divisor)
+    if remainder * 2 >= divisor:
+        tenths += 1
+    return f"{tenths // 10}.{tenths % 10} {suffix}"
+
+
+def _is_file_envelope(text: Optional[str]) -> bool:
+    """Whether decrypted text is a browser attachment protocol envelope."""
+    if not isinstance(text, str) or not text.startswith("{"):
+        return False
+    try:
+        envelope = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(envelope, dict)
+        and type(envelope.get("bot2bot_file_v1")) is int
+        and envelope["bot2bot_file_v1"] == 1
+    )
+
+
+def _validate_attachment_name(name: object) -> str:
+    if not isinstance(name, str) or len(name) > 240:
+        raise ValueError("invalid attachment name")
+    if name in {"", ".", ".."} or len(name) > 180 or name != _attachment_name(name):
+        raise ValueError("attachment name is not a safe basename")
+    return name
 
 
 def _b64url_decode(s: str) -> bytes:
@@ -233,13 +286,8 @@ class Room:
 
     # --- I/O ---------------------------------------------------------------
 
-    def send(self, text: str, retries: int = 4) -> None:
-        """Encrypt and POST a message to the room.
-
-        Retries transparently on transient network errors and 5xx/429 responses
-        with exponential backoff — survives short deploy gaps and rate-limit
-        bursts without raising to the caller.
-        """
+    def _send_text(self, text: str, retries: int = 4, require_id: bool = False) -> Optional[str]:
+        """Encrypt and POST text, optionally requiring the server's UUID id."""
         if not isinstance(text, str):
             raise TypeError("text must be str")
         nonce = nacl_random(SecretBox.NONCE_SIZE)
@@ -276,7 +324,13 @@ class Room:
                 )
                 if r.status_code < 500 and r.status_code != 429:
                     r.raise_for_status()
-                    return
+                    if not require_id:
+                        return None
+                    result = r.json()
+                    message_id = result.get("id") if isinstance(result, dict) else None
+                    if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(message_id, str) or not _FILE_UUID_RE.fullmatch(message_id):
+                        raise ValueError("relay did not confirm a message with a valid UUID id")
+                    return message_id
                 last_err = requests.HTTPError(
                     f"transient {r.status_code} from server", response=r
                 )
@@ -287,6 +341,237 @@ class Room:
                 delay = 0.2 * (2 ** attempt) + (0.1 * (attempt + 1))
                 time.sleep(delay)
         raise last_err if last_err else RuntimeError("send failed")
+
+    def send(self, text: str, retries: int = 4) -> None:
+        """Encrypt and POST a message to the room.
+
+        Retries transparently on transient network errors and 5xx/429 responses
+        with exponential backoff — survives short deploy gaps and rate-limit
+        bursts without raising to the caller.
+        """
+        self._send_text(text, retries=retries)
+
+    def send_file(self, path: str | os.PathLike) -> str:
+        """Send a room-key encrypted file using the browser attachment protocol.
+
+        Returns the server-confirmed UUID of the visible manifest message.
+        Each POST is attempted once: after an ambiguous network failure the
+        server may already have accepted that message, so retrying could create
+        duplicate chunks. Files are limited to 10 MiB.
+        """
+        if path is None:
+            raise TypeError("path is required")
+        raw_path = os.fspath(path)
+        if not isinstance(raw_path, str) or not raw_path:
+            raise TypeError("path must be a non-empty string or PathLike")
+        name = _attachment_name(raw_path)
+        with open(raw_path, "rb") as handle:
+            data = handle.read(_FILE_MAX_BYTES + 1)
+        if len(data) > _FILE_MAX_BYTES:
+            raise ValueError("file must be at most 10 MiB")
+
+        size = len(data)
+        sha256 = hashlib.sha256(data).hexdigest()
+        file_id = str(uuid.uuid4())
+        total = max(1, (size + _FILE_CHUNK_BYTES - 1) // _FILE_CHUNK_BYTES)
+        manifest_id = self._send_text(
+            f"📎 File: {name} ({_attachment_size_label(size)})",
+            retries=0,
+            require_id=True,
+        )
+        assert manifest_id is not None
+
+        for index in range(total):
+            start = index * _FILE_CHUNK_BYTES
+            chunk = data[start : start + _FILE_CHUNK_BYTES]
+            envelope = {
+                "bot2bot_file_v1": 1,
+                "bot2bot_hist_resp_v1": True,
+                "type": "chunk",
+                "parent_id": manifest_id,
+                "file_id": file_id,
+                "name": name,
+                "size": size,
+                "sha256": sha256,
+                "index": index,
+                "total": total,
+                "data": base64.b64encode(chunk).decode("ascii"),
+            }
+            self._send_text(
+                json.dumps(envelope, ensure_ascii=False, separators=(",", ":")),
+                retries=0,
+            )
+        return manifest_id
+
+    def download_file(self, manifest_id: str, output_path: str | os.PathLike) -> os.PathLike:
+        """Verify and download an attachment to an explicit, non-overwritten path.
+
+        Transcript pages are fetched with the relay's 500-message maximum.
+        The remote filename is metadata only; it is never used to construct the
+        caller-supplied output path. The completed file appears atomically only
+        after every chunk and the SHA-256 digest have been verified.
+        """
+        if not isinstance(manifest_id, str) or not _FILE_UUID_RE.fullmatch(manifest_id):
+            raise ValueError("manifest_id must be a UUID")
+        if output_path is None:
+            raise TypeError("output_path is required")
+        raw_output = os.fspath(output_path)
+        if not isinstance(raw_output, str) or not raw_output:
+            raise TypeError("output_path must be a non-empty string or PathLike")
+        target = Path(raw_output)
+        if target.exists() or target.is_symlink():
+            raise FileExistsError(f"refusing to overwrite {target}")
+        parent_dir = target.parent
+        if not parent_dir.is_dir():
+            raise FileNotFoundError(f"output directory does not exist: {parent_dir}")
+
+        cursor = 0
+        snapshot_last_seq: Optional[int] = None
+        manifest: Optional[Message] = None
+        manifest_seq: Optional[int] = None
+        manifest_sender: Optional[str] = None
+        file_metadata: Optional[tuple] = None
+        chunks: dict[int, bytes] = {}
+        chunk_sequences: dict[int, int] = {}
+
+        while True:
+            response = self._get_retry(
+                "/transcript",
+                params={"after": cursor, "limit": 500},
+            )
+            page_data = response.json()
+            if not isinstance(page_data, dict):
+                raise ValueError("relay returned an invalid transcript page")
+            if snapshot_last_seq is None:
+                high_water = page_data.get("last_seq")
+                if isinstance(high_water, bool) or not isinstance(high_water, int) or high_water < 0:
+                    raise ValueError("relay returned an invalid transcript last_seq")
+                snapshot_last_seq = high_water
+            page = page_data.get("messages")
+            if not isinstance(page, list) or len(page) > 500:
+                raise ValueError("relay returned an invalid transcript message page")
+            if not page:
+                break
+
+            previous_seq = cursor
+            for raw_message in page:
+                if not isinstance(raw_message, dict):
+                    raise ValueError("relay returned an invalid transcript message")
+                seq = raw_message.get("seq")
+                if isinstance(seq, bool) or not isinstance(seq, int) or seq <= previous_seq:
+                    raise ValueError("transcript pagination did not advance in sequence order")
+                previous_seq = seq
+                if seq > snapshot_last_seq:
+                    continue
+
+                message = self._decode(raw_message)
+                if message.id == manifest_id:
+                    if manifest is not None:
+                        raise ValueError("transcript contains duplicate manifest ids")
+                    if not isinstance(raw_message.get("sender"), str):
+                        raise ValueError("attachment manifest has no valid sender")
+                    manifest = message
+                    manifest_seq = seq
+                    manifest_sender = raw_message["sender"]
+
+                text = message.text
+                if not isinstance(text, str) or not text.startswith("{"):
+                    continue
+                try:
+                    envelope = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(envelope, dict) or type(envelope.get("bot2bot_file_v1")) is not int or envelope.get("bot2bot_file_v1") != 1:
+                    continue
+                if envelope.get("parent_id") != manifest_id:
+                    continue
+
+                if envelope.get("bot2bot_hist_resp_v1") is not True or envelope.get("type") != "chunk":
+                    raise ValueError("invalid attachment chunk protocol markers")
+                file_id = envelope.get("file_id")
+                if not isinstance(file_id, str) or not _FILE_UUID_RE.fullmatch(file_id):
+                    raise ValueError("invalid attachment file_id")
+                name = _validate_attachment_name(envelope.get("name"))
+                size = envelope.get("size")
+                total = envelope.get("total")
+                index = envelope.get("index")
+                if isinstance(size, bool) or not isinstance(size, int) or not 0 <= size <= _FILE_MAX_BYTES:
+                    raise ValueError("invalid attachment size")
+                expected_total = max(1, (size + _FILE_CHUNK_BYTES - 1) // _FILE_CHUNK_BYTES)
+                if isinstance(total, bool) or not isinstance(total, int) or total != expected_total:
+                    raise ValueError("invalid attachment chunk count")
+                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < total:
+                    raise ValueError("invalid attachment chunk index")
+                digest = envelope.get("sha256")
+                if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                    raise ValueError("invalid attachment SHA-256 metadata")
+                encoded = envelope.get("data")
+                if not isinstance(encoded, str):
+                    raise ValueError("invalid attachment chunk data")
+                try:
+                    chunk_data = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise ValueError("attachment chunk data is not standard base64") from exc
+                if base64.b64encode(chunk_data).decode("ascii") != encoded:
+                    raise ValueError("attachment chunk data is not canonical base64")
+                expected_size = (
+                    size - index * _FILE_CHUNK_BYTES
+                    if index == total - 1
+                    else _FILE_CHUNK_BYTES
+                )
+                if len(chunk_data) != expected_size:
+                    raise ValueError("attachment chunk byte length does not match metadata")
+                raw_sender = raw_message.get("sender")
+                if not isinstance(raw_sender, str):
+                    raise ValueError("attachment chunk has an invalid sender")
+                metadata = (file_id, name, size, digest, total, raw_sender)
+                if file_metadata is None:
+                    file_metadata = metadata
+                elif metadata != file_metadata:
+                    raise ValueError("attachment chunks have mismatched metadata or sender")
+                if index in chunks:
+                    raise ValueError("transcript contains a duplicate attachment chunk index")
+                chunks[index] = chunk_data
+                chunk_sequences[index] = seq
+
+            cursor = previous_seq  # advance from the last returned transcript sequence
+            if cursor >= snapshot_last_seq:
+                break
+
+        if manifest is None or not isinstance(manifest.text, str):
+            raise ValueError("attachment manifest was not found or could not be decrypted")
+        if file_metadata is None:
+            raise ValueError("attachment has no valid chunks")
+        file_id, name, size, digest, total, sender = file_metadata
+        if manifest_sender != sender:
+            raise ValueError("attachment manifest and chunks have different senders")
+        if manifest_seq is None or any(seq <= manifest_seq for seq in chunk_sequences.values()):
+            raise ValueError("attachment chunks must follow their manifest")
+        if manifest.text != f"📎 File: {name} ({_attachment_size_label(size)})":
+            raise ValueError("attachment manifest does not match chunk metadata")
+        if len(chunks) != total or any(index not in chunks for index in range(total)):
+            raise ValueError("attachment transfer is incomplete")
+        data = b"".join(chunks[index] for index in range(total))
+        if len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError("attachment size or SHA-256 digest verification failed")
+
+        temp_path: Optional[str] = None
+        try:
+            fd, temp_path = tempfile.mkstemp(prefix=".bot2bot-", dir=str(parent_dir))
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            # A hard link creates the destination atomically without replacing
+            # an output another process may have created during the download.
+            os.link(temp_path, target)
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+        return target
 
     def stream(
         self,
@@ -374,6 +659,11 @@ class Room:
                         decoded.sender,
                         bool(obj.get("sender_verified")),
                     ):
+                        continue
+                    # Attachment chunks are transport envelopes, not chat
+                    # content. `last_seq` was advanced above before filtering
+                    # so reconnects resume past these hidden messages.
+                    if _is_file_envelope(decoded.text):
                         continue
                     if mention_only:
                         txt = decoded.text or ""
