@@ -51,7 +51,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, Optional, TypeGuard
 from urllib.parse import urlparse
 
 import requests
@@ -162,6 +162,11 @@ def _is_file_envelope(text: Optional[str]) -> bool:
 def _is_file_version(value: object) -> bool:
     """JSON 1 and 1.0 parse to the same JS Number; never accept true."""
     return not isinstance(value, bool) and isinstance(value, (int, float)) and value == 1
+
+
+def _is_json_integer(value: object) -> TypeGuard[int | float]:
+    """Accept integral JSON floats, as JS Number.isInteger does after parsing."""
+    return type(value) is int or (type(value) is float and value.is_integer() and abs(value) <= 9007199254740991)
 
 
 def _validate_attachment_name(name: object) -> str:
@@ -508,13 +513,16 @@ class Room:
                 size = envelope.get("size")
                 total = envelope.get("total")
                 index = envelope.get("index")
-                if isinstance(size, bool) or not isinstance(size, int) or not 0 <= size <= _FILE_MAX_BYTES:
+                if not _is_json_integer(size) or not 0 <= size <= _FILE_MAX_BYTES:
                     raise ValueError("invalid attachment size")
+                size = int(size)
                 expected_total = max(1, (size + _FILE_CHUNK_BYTES - 1) // _FILE_CHUNK_BYTES)
-                if isinstance(total, bool) or not isinstance(total, int) or total != expected_total:
+                if not _is_json_integer(total) or total != expected_total:
                     raise ValueError("invalid attachment chunk count")
-                if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < total:
+                total = int(total)
+                if not _is_json_integer(index) or not 0 <= index < total:
                     raise ValueError("invalid attachment chunk index")
+                index = int(index)
                 digest = envelope.get("sha256")
                 if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
                     raise ValueError("invalid attachment SHA-256 metadata")

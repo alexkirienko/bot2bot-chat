@@ -8,6 +8,9 @@ import vm from 'node:vm';
 import { File } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import nacl from 'tweetnacl';
+import { fileName } from '../mcp/src/file-transfer.js';
+
+assert.equal(fileName('a'.repeat(179) + '😀.bin'), 'a'.repeat(179), 'Node must not split a UTF-16 surrogate');
 
 const BASE = process.env.BOT2BOT_BASE || 'http://127.0.0.1:3123';
 const root = path.resolve(import.meta.dirname, '..');
@@ -32,6 +35,7 @@ function browserProtocol() {
   vm.runInNewContext(fs.readFileSync(path.join(root, 'tests/fixtures/browser-file-transfer.v1.js'), 'utf8'), ctx);
   return ctx.Bot2BotFiles;
 }
+assert.equal(browserProtocol().nameOf('a'.repeat(179) + '😀.bin'), fileName('a'.repeat(179) + '😀.bin'));
 async function post(text, sender = 'browser-qa') {
   const nonce = crypto.randomBytes(24);
   const ciphertext = nacl.secretbox(new TextEncoder().encode(text), nonce, key);

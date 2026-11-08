@@ -213,6 +213,20 @@ class FileAttachmentTests(unittest.TestCase):
             self.room.download_file(manifest_id, destination)
             self.assertEqual(destination.read_bytes(), source.read_bytes())
 
+    def test_python_accepts_integral_json_number_fields_like_js(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "integral.bin"
+            source.write_bytes(b"good")
+            manifest_id = self.room.send_file(source)
+            chunk_message = self._messages()[1]
+            chunk = json.loads(self._plaintext(chunk_message))
+            for key in ("size", "total", "index"):
+                chunk[key] = float(chunk[key])
+            self._replace_plaintext(chunk_message, json.dumps(chunk))
+            destination = Path(directory) / "integral-received.bin"
+            self.room.download_file(manifest_id, destination)
+            self.assertEqual(destination.read_bytes(), b"good")
+
     def test_manifest_digest_blocks_same_label_chunk_replacement(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "bound.bin"

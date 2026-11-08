@@ -10,8 +10,16 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const DIGEST = /^[a-f0-9]{64}$/;
 
 export function fileName(raw) {
-  return (String(raw || '').split(/[\\/]/).pop() || '')
-    .replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 180) || 'attachment';
+  const clean = (String(raw || '').split(/[\\/]/).pop() || '')
+    .replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+  let units = 0;
+  let safe = '';
+  for (const char of clean) {
+    if (units + char.length > 180) break;
+    safe += char;
+    units += char.length;
+  }
+  return safe || 'attachment';
 }
 export function fileSizeLabel(bytes) {
   if (bytes < 1024) return `${bytes} B`;
