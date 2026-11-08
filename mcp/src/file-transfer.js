@@ -35,7 +35,7 @@ export function prepareFile(filePath) {
   const total = Math.max(1, Math.ceil(bytes.length / CHUNK_BYTES));
   return {
     name, size: bytes.length, sha256, fileId, total,
-    manifest: `📎 File: ${name} (${fileSizeLabel(bytes.length)})`,
+    manifest: `📎 File: ${name} (${fileSizeLabel(bytes.length)}) [SHA-256: ${sha256}]`,
     chunk(parentId, index) {
       if (!UUID.test(parentId) || !Number.isInteger(index) || index < 0 || index >= total) throw new Error('bad file chunk');
       return {
@@ -72,8 +72,11 @@ export function assembleFile(messages, manifestId) {
         || !Number.isInteger(index) || index < 0 || index >= total
         || typeof data !== 'string' || data.length > 65536
         || m.sender !== manifest.sender
-        || manifest.text !== `📎 File: ${name} (${fileSizeLabel(size)})`) {
+        || Boolean(m.sender_verified) !== Boolean(manifest.sender_verified)) {
       throw new Error('file metadata or sender mismatch');
+    }
+    if (manifest.text !== `📎 File: ${name} (${fileSizeLabel(size)}) [SHA-256: ${sha256}]`) {
+      throw new Error('file manifest SHA-256 does not match chunk metadata or is absent');
     }
     if (!meta) { meta = { fileId, name, size, sha256, total }; chunks = new Array(total); }
     if (meta.fileId !== fileId || meta.name !== name || meta.size !== size || meta.sha256 !== sha256 || meta.total !== total) {

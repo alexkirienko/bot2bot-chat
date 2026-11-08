@@ -123,7 +123,18 @@ _FILE_NAME_STRIP_RE = re.compile(r"[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]")
 def _attachment_name(path: str) -> str:
     """Return the safe basename used by the browser file-transfer protocol."""
     basename = re.split(r"[\\/]", path)[-1]
-    return _FILE_NAME_STRIP_RE.sub("", basename).strip()[:180] or "attachment"
+    cleaned = _FILE_NAME_STRIP_RE.sub("", basename).strip()
+    # JS String.slice(0, 180) counts UTF-16 code units, not Python code
+    # points. Keep whole scalars (never produce an unpaired surrogate).
+    units = 0
+    chars = []
+    for char in cleaned:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if units + width > 180:
+            break
+        chars.append(char)
+        units += width
+    return "".join(chars) or "attachment"
 
 
 def _attachment_size_label(size: int) -> str:
@@ -145,17 +156,18 @@ def _is_file_envelope(text: Optional[str]) -> bool:
         envelope = json.loads(text)
     except (ValueError, TypeError):
         return False
-    return (
-        isinstance(envelope, dict)
-        and type(envelope.get("bot2bot_file_v1")) is int
-        and envelope["bot2bot_file_v1"] == 1
-    )
+    return isinstance(envelope, dict) and _is_file_version(envelope.get("bot2bot_file_v1"))
+
+
+def _is_file_version(value: object) -> bool:
+    """JSON 1 and 1.0 parse to the same JS Number; never accept true."""
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and value == 1
 
 
 def _validate_attachment_name(name: object) -> str:
-    if not isinstance(name, str) or len(name) > 240:
+    if not isinstance(name, str) or len(name.encode("utf-16-le", errors="surrogatepass")) // 2 > 240:
         raise ValueError("invalid attachment name")
-    if name in {"", ".", ".."} or len(name) > 180 or name != _attachment_name(name):
+    if name in {"", ".", ".."} or name != _attachment_name(name):
         raise ValueError("attachment name is not a safe basename")
     return name
 
@@ -375,7 +387,7 @@ class Room:
         file_id = str(uuid.uuid4())
         total = max(1, (size + _FILE_CHUNK_BYTES - 1) // _FILE_CHUNK_BYTES)
         manifest_id = self._send_text(
-            f"📎 File: {name} ({_attachment_size_label(size)})",
+            f"📎 File: {name} ({_attachment_size_label(size)}) [SHA-256: {sha256}]",
             retries=0,
             require_id=True,
         )
@@ -433,6 +445,7 @@ class Room:
         file_metadata: Optional[tuple] = None
         chunks: dict[int, bytes] = {}
         chunk_sequences: dict[int, int] = {}
+        chunk_verifications: dict[int, bool] = {}
 
         while True:
             response = self._get_retry(
@@ -481,7 +494,7 @@ class Room:
                     envelope = json.loads(text)
                 except (ValueError, TypeError):
                     continue
-                if not isinstance(envelope, dict) or type(envelope.get("bot2bot_file_v1")) is not int or envelope.get("bot2bot_file_v1") != 1:
+                if not isinstance(envelope, dict) or not _is_file_version(envelope.get("bot2bot_file_v1")):
                     continue
                 if envelope.get("parent_id") != manifest_id:
                     continue
@@ -533,6 +546,7 @@ class Room:
                     raise ValueError("transcript contains a duplicate attachment chunk index")
                 chunks[index] = chunk_data
                 chunk_sequences[index] = seq
+                chunk_verifications[index] = raw_message.get("sender_verified") is True
 
             cursor = previous_seq  # advance from the last returned transcript sequence
             if cursor >= snapshot_last_seq:
@@ -545,10 +559,12 @@ class Room:
         file_id, name, size, digest, total, sender = file_metadata
         if manifest_sender != sender:
             raise ValueError("attachment manifest and chunks have different senders")
+        if any(verified != manifest.sender_verified for verified in chunk_verifications.values()):
+            raise ValueError("attachment manifest and chunks have different sender verification")
         if manifest_seq is None or any(seq <= manifest_seq for seq in chunk_sequences.values()):
             raise ValueError("attachment chunks must follow their manifest")
-        if manifest.text != f"📎 File: {name} ({_attachment_size_label(size)})":
-            raise ValueError("attachment manifest does not match chunk metadata")
+        if manifest.text != f"📎 File: {name} ({_attachment_size_label(size)}) [SHA-256: {digest}]":
+            raise ValueError("attachment manifest SHA-256 does not match chunk metadata")
         if len(chunks) != total or any(index not in chunks for index in range(total)):
             raise ValueError("attachment transfer is incomplete")
         data = b"".join(chunks[index] for index in range(total))

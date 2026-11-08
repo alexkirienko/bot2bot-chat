@@ -22,7 +22,7 @@ from nacl.secret import SecretBox
 from nacl.utils import random as nacl_random
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sdk"))
-from bot2bot import Identity, Room  # noqa: E402
+from bot2bot import Identity, Room, _attachment_name  # noqa: E402
 
 
 CHUNK_BYTES = 48 * 1024
@@ -160,7 +160,7 @@ class FileAttachmentTests(unittest.TestCase):
         messages = self._messages()
         self.assertEqual(len(messages), 3)
         self.assertEqual(messages[0]["id"], manifest_id)
-        self.assertEqual(self._plaintext(messages[0]), "📎 File: report.bin (48.0 KiB)")
+        self.assertEqual(self._plaintext(messages[0]), f"📎 File: report.bin (48.0 KiB) [SHA-256: {hashlib.sha256(data).hexdigest()}]")
         chunks = [json.loads(self._plaintext(message)) for message in messages[1:]]
         self.assertEqual([chunk["index"] for chunk in chunks], [0, 1])
         self.assertEqual([chunk["total"] for chunk in chunks], [2, 2])
@@ -188,7 +188,7 @@ class FileAttachmentTests(unittest.TestCase):
 
         messages = self._messages()
         self.assertEqual(len(messages), 2)
-        self.assertEqual(self._plaintext(messages[0]), "📎 File: empty.dat (0 B)")
+        self.assertEqual(self._plaintext(messages[0]), f"📎 File: empty.dat (0 B) [SHA-256: {hashlib.sha256(b'').hexdigest()}]")
         chunk = json.loads(self._plaintext(messages[1]))
         self.assertEqual(chunk["parent_id"], manifest_id)
         self.assertEqual(chunk["size"], 0)
@@ -196,6 +196,37 @@ class FileAttachmentTests(unittest.TestCase):
         self.assertEqual(chunk["index"], 0)
         self.assertEqual(chunk["data"], "")
         self.assertEqual(chunk["sha256"], hashlib.sha256(b"").hexdigest())
+
+    def test_supplementary_unicode_filename_obeys_browser_utf16_limit(self):
+        self.assertEqual(_attachment_name("😀" * 91 + ".bin"), "😀" * 90)
+
+    def test_python_accepts_json_numeric_version_1_point_0_like_browser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "numeric.bin"
+            source.write_bytes(b"numeric version")
+            manifest_id = self.room.send_file(source)
+            chunk_message = self._messages()[1]
+            chunk = json.loads(self._plaintext(chunk_message))
+            chunk["bot2bot_file_v1"] = 1.0
+            self._replace_plaintext(chunk_message, json.dumps(chunk))
+            destination = Path(directory) / "numeric-received.bin"
+            self.room.download_file(manifest_id, destination)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+
+    def test_manifest_digest_blocks_same_label_chunk_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "bound.bin"
+            source.write_bytes(b"good")
+            manifest_id = self.room.send_file(source)
+            chunk_message = self._messages()[1]
+            chunk = json.loads(self._plaintext(chunk_message))
+            chunk["data"] = base64.b64encode(b"evil").decode("ascii")
+            chunk["sha256"] = hashlib.sha256(b"evil").hexdigest()
+            self._replace_plaintext(chunk_message, json.dumps(chunk))
+            destination = Path(directory) / "never-write.bin"
+            with self.assertRaises(ValueError):
+                self.room.download_file(manifest_id, destination)
+            self.assertFalse(destination.exists())
 
     def test_send_file_rejects_oversize_before_posting(self):
         with tempfile.TemporaryDirectory() as directory:

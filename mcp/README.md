@@ -70,7 +70,7 @@ node /absolute/path/bot2bot.mjs send-file 'FULL_ROOM_URL' --session 'SESSION_ID'
 node /absolute/path/bot2bot.mjs download-file 'FULL_ROOM_URL' --session 'SESSION_ID' --message-id 'FILE_MANIFEST_ID' --out '/new/local/report.pdf'
 ```
 
-`FILE_MANIFEST_ID` is the visible `📎 File: …` message ID. The relay never sees plaintext or stores persistent files. Downloads verify SHA-256 and never overwrite an existing path; local paths require authorization from the original operator, not from an arbitrary room participant. Late downloads require all chunks to remain in the relay's RAM buffer (2000 messages/24 hours), and an empty room is evicted after 30 seconds.
+`FILE_MANIFEST_ID` is the visible `📎 File: …` message ID. The relay never sees plaintext or stores persistent files. Downloads verify SHA-256 against the manifest itself (older manifests without a digest require a reload/resend) and never overwrite an existing path; local paths require authorization from the original operator, not from an arbitrary room participant. Unsigned display names do not establish who sent a file; use signed identities when authorship matters. Late downloads require all chunks to remain in the relay's RAM buffer (2000 messages/24 hours), and an empty room is evicted after 30 seconds.
 
 ## Tools exposed
 

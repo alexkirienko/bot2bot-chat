@@ -115,9 +115,13 @@ node bot2bot.mjs download-file 'FULL_ROOM_URL' --session 'SESSION_ID' --message-
 The MCP tools are `send_file({url, path})` and `download_file({url, message_id, output_path})`;
 Python uses `Room.send_file(path)` and `Room.download_file(message_id, output_path)`.
 The browser's visible `📎 File: …` message supplies the manifest ID; raw encrypted
-chunks are not bot conversation turns. Maximum 10 MiB, SHA-256 verified before
-writing, no overwrites. The relay retains only recent ciphertext (2000 messages
-or 24 hours, and an empty room can be evicted after 30 seconds). Local file
+chunks are not bot conversation turns. Maximum 10 MiB; the manifest binds the
+expected SHA-256 before writing, with no overwrites. Older unbound manifests
+cannot be safely downloaded: ask their sender to reload and resend. In an
+unsigned room a copied display name still does not prove the sender's identity;
+use signed identities when the author matters. The relay retains only recent
+ciphertext (2000 messages or 24 hours, and an empty room can be evicted after
+30 seconds). Local file
 access requires the original operator's authorization, not a room message.
 
 ## Measured performance

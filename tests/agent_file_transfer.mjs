@@ -82,7 +82,7 @@ try {
   // Browser wire format is consumed by a bot and saved as verified bytes.
   const incoming = crypto.randomBytes(100321);
   const packed = await browser.create(new File([incoming], 'browser-to-bot.bin'));
-  const parent = await post(`📎 File: ${packed.name} (${(packed.size / 1024).toFixed(1)} KiB)`);
+  const parent = await post(`📎 File: ${packed.name} (${(packed.size / 1024).toFixed(1)} KiB) [SHA-256: ${packed.sha256}]`);
   for (let i = 0; i < packed.total; i++) await post(JSON.stringify(packed.chunk(parent.id, i)));
   const destination = path.join(dir, 'received.bin');
   const received = await backend.RAW_HANDLERS.download_file({ url, message_id: parent.id, output_path: destination });
@@ -98,7 +98,7 @@ try {
   assert.equal(next.empty, true, 'claim should skip/ack all file chunks without exposing them');
 
   // Forged digest must never produce even a partial destination file.
-  const wrong = await post('📎 File: corrupt.bin (4 B)');
+  const wrong = await post(`📎 File: corrupt.bin (4 B) [SHA-256: ${'0'.repeat(64)}]`);
   await post(JSON.stringify({ bot2bot_file_v1: 1, bot2bot_hist_resp_v1: true, type: 'chunk',
     parent_id: wrong.id, file_id: crypto.randomUUID(), name: 'corrupt.bin', size: 4, total: 1,
     index: 0, sha256: '0'.repeat(64), data: Buffer.from('test').toString('base64') }));
@@ -106,7 +106,20 @@ try {
   await assert.rejects(() => backend.RAW_HANDLERS.download_file({ url, message_id: wrong.id, output_path: bad }), /checksum|digest/i);
   assert.equal(fs.existsSync(bad), false);
 
-  const half = await post('📎 File: absent.bin (48.0 KiB)');
+  // In an unsigned room, a peer can copy the sender label and invent both
+  // bytes and a self-consistent chunk digest. Without a digest in the
+  // manifest the download cannot know what the real sender announced.
+  const unbound = await post('📎 File: unbound.bin (4 B)', 'browser-qa');
+  const attackerBytes = Buffer.from('evil');
+  await post(JSON.stringify({ bot2bot_file_v1: 1, bot2bot_hist_resp_v1: true, type: 'chunk',
+    parent_id: unbound.id, file_id: crypto.randomUUID(), name: 'unbound.bin', size: 4, total: 1,
+    index: 0, sha256: crypto.createHash('sha256').update(attackerBytes).digest('hex'),
+    data: attackerBytes.toString('base64') }), 'browser-qa');
+  const unsafe = path.join(dir, 'unbound-received.bin');
+  await assert.rejects(() => backend.RAW_HANDLERS.download_file({ url, message_id: unbound.id, output_path: unsafe }), /manifest|unbound|SHA-256/i);
+  assert.equal(fs.existsSync(unsafe), false);
+
+  const half = await post(`📎 File: absent.bin (48.0 KiB) [SHA-256: ${'0'.repeat(64)}]`);
   await post(JSON.stringify({ bot2bot_file_v1: 1, bot2bot_hist_resp_v1: true, type: 'chunk',
     parent_id: half.id, file_id: crypto.randomUUID(), name: 'absent.bin', size: 49153, total: 2,
     index: 0, sha256: '0'.repeat(64), data: Buffer.alloc(49152).toString('base64') }));
