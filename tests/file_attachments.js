@@ -94,6 +94,20 @@ async function main() {
     const after = await (await fetch(`${BASE}/api/rooms/${roomId}/transcript?after=0&limit=20`)).json();
     assert.equal(fileMessages(after.messages, key).length, 5, 'oversized file must never be sent');
 
+    // Truncate by UTF-16 units without leaving a lone surrogate: otherwise
+    // the room crypto UTF-8 encoder throws URIError on a valid filename.
+    const safeBoundary = await sender.evaluate(() => {
+      const name = window.Bot2BotFiles.nameOf('a'.repeat(179) + '😀.bin');
+      encodeURIComponent(name);
+      return name;
+    });
+    assert.equal(safeBoundary, 'a'.repeat(179));
+    await sender.locator('#file-input').setInputFiles({ name: 'a'.repeat(179) + '😀.bin',
+      mimeType: 'application/octet-stream', buffer: Buffer.from([42]) });
+    const boundaryCard = receiver.locator('.bubble').filter({ has: receiver.locator('.bubble__file-name', { hasText: safeBoundary }) });
+    await boundaryCard.locator('.bubble__file-download:not([disabled])').waitFor({ timeout: 12000 });
+    assert.deepEqual((await downloadedBytes(receiver, boundaryCard)).data, Buffer.from([42]));
+
     // A peer with the room key can copy an unsigned sender label. A digest
     // only inside the chunk is attacker-controlled; the manifest must anchor
     // the expected bytes before the download becomes available.

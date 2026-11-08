@@ -10,8 +10,15 @@
 
   function nameOf(raw) {
     const last = String(raw || '').split(/[\\/]/).pop();
-    return (last || '').replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '')
-      .trim().slice(0, 180) || 'attachment';
+    const clean = (last || '').replace(/[\x00-\x1f\x7f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+    let units = 0;
+    let safe = '';
+    for (const char of clean) {
+      if (units + char.length > 180) break;
+      safe += char;
+      units += char.length;
+    }
+    return safe || 'attachment';
   }
   function base64(bytes) {
     let s = '';
